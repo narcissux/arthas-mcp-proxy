@@ -23,7 +23,6 @@ import logging
 import os
 import sys
 import threading
-from typing import TYPE_CHECKING, Optional
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -31,10 +30,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from arthas_mcp_proxy.arthas_client import ArthasClient
 from arthas_mcp_proxy.decorators import require_session, set_fallback_credential_getter
-from arthas_mcp_proxy.ssh_pool import SSHConnectionPool
-
-if TYPE_CHECKING:
-    from arthas_mcp_proxy.ssh_pool import SSHSession
+from arthas_mcp_proxy.ssh_pool import get_connection_pool
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -47,23 +43,10 @@ logger = logging.getLogger(__name__)
 # ─── Global state ────────────────────────────────────────────────────────────
 _transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 mcp = FastMCP("arthas-mcp-proxy", transport_security=_transport_security)
-_pool: SSHConnectionPool | None = None
-_pool_lock = threading.Lock()
 
 # Session credential cache (for fallback reconnection)
 _session_store: dict[str, dict[str, str | int]] = {}
 _store_lock = threading.Lock()
-
-
-def get_connection_pool() -> SSHConnectionPool:
-    """Get or create the global SSH connection pool."""
-    global _pool
-    if _pool is None:
-        with _pool_lock:
-            if _pool is None:
-                idle_timeout = int(os.environ.get("SSH_IDLE_TIMEOUT", "300"))
-                _pool = SSHConnectionPool(idle_timeout=idle_timeout)
-    return _pool
 
 
 def _store_session(session_id: str, host: str, port: int, username: str) -> None:

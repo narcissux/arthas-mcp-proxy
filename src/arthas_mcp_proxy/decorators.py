@@ -110,7 +110,7 @@ def require_session(
                     )
 
             if not session:
-                return "Error: Session not found or expired. " "Please reconnect using connect_ssh."
+                return "Error: Session not found or expired. Please reconnect using connect_ssh."
 
             kwargs["session"] = session
             result: str = func(*args, **kwargs)
