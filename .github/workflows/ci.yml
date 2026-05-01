@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ruff mypy types-paramiko
+          pip install "ruff==0.15.12" "mypy==1.20.2" types-paramiko
 
       - name: Ruff check
         run: ruff check src/ tests/
@@ -28,7 +28,7 @@ jobs:
         run: ruff format --check src/ tests/
 
       - name: Mypy type check
-        run: mypy --no-incremental src/arthas_mcp_proxy
+        run: mypy --no-incremental --show-error-codes src/arthas_mcp_proxy
 
   test:
     runs-on: ubuntu-latest
