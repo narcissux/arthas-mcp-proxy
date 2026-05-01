@@ -28,7 +28,7 @@ jobs:
         run: ruff format --check src/ tests/
 
       - name: Mypy type check
-        run: mypy --show-error-codes src/arthas_mcp_proxy || true
+        run: mypy --show-error-codes src/arthas_mcp_proxy
 
   test:
     runs-on: ubuntu-latest
