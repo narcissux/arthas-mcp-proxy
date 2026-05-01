@@ -81,15 +81,20 @@ jobs:
       - name: Start Docker test target
         run: |
           docker compose -f docker-compose.test.yml up --build -d
+          # Wait longer for container build + SSH startup
+          sleep 30
           # Wait for SSH to be ready
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             if nc -z localhost 2222; then
               echo "SSH ready on port 2222"
               break
             fi
-            echo "Waiting for SSH... ($i/60)"
-            sleep 1
+            echo "Waiting for SSH... ($i/90)"
+            sleep 2
           done
+          # Debug: show container status
+          docker compose -f docker-compose.test.yml ps
+          docker logs arthas-test-target 2>/dev/null || true
 
       - name: Run integration tests
         run: |
