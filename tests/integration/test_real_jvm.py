@@ -68,7 +68,12 @@ class TestArthasInstall:
 
     @staticmethod
     def _clean_arthas_residuals(ssh_session: "SSHSession") -> None:
-        """Remove Arthas files left by previous runs for a clean test."""
+        """Remove Arthas files left by previous runs for a clean test.
+
+        Uses blocking reads to ensure removal completes before returning,
+        otherwise non-interactive SSH exec_command may race with subsequent
+        _find_arthas_path() checks.
+        """
         paths = [
             "/tmp/arthas-bin.zip",
             "/tmp/arthas-all",
@@ -76,7 +81,8 @@ class TestArthasInstall:
             "$HOME/.arthas",
         ]
         for p in paths:
-            ssh_session.client.exec_command(f"rm -rf {p}")
+            _, stdout, _ = ssh_session.client.exec_command(f"rm -rf {p}")
+            stdout.channel.recv_exit_status()  # block until rm completes
 
     def test_install_arthas(self, arthas_client: "ArthasClient", ssh_session: "SSHSession") -> None:
         self._clean_arthas_residuals(ssh_session)
