@@ -71,6 +71,7 @@ class TestArthasInstall:
         """Remove Arthas files left by previous runs for a clean test."""
         paths = [
             "/tmp/arthas-bin.zip",
+            "/tmp/arthas-all",
             "/tmp/arthas-install",
             "$HOME/.arthas",
         ]

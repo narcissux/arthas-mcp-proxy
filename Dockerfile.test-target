@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     netcat-openbsd \
     sudo \
+    iproute2 \
+    net-tools \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
