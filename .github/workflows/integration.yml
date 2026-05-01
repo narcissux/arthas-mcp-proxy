@@ -1,0 +1,94 @@
+name: Integration Tests
+
+on:
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      ssh_host:
+        description: 'SSH target host'
+        required: true
+        default: 'localhost'
+      ssh_user:
+        description: 'SSH username'
+        required: true
+        default: 'testuser'
+      ssh_password:
+        description: 'SSH password'
+        required: true
+        default: 'testpass'
+      ssh_port:
+        description: 'SSH port'
+        required: false
+        default: '2222'
+
+  # Nightly run against Docker test target
+  schedule:
+    - cron: '0 2 * * *'  # 02:00 UTC daily
+
+jobs:
+  integration-docker:
+    name: Integration (Docker test target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Build and start test target
+        run: |
+          docker compose -f docker-compose.test.yml up --build -d
+          # Wait for SSH to be ready
+          for i in {1..30}; do
+            if nc -z localhost 2222; then
+              echo "SSH ready on port 2222"
+              break
+            fi
+            echo "Waiting for SSH... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run integration tests
+        env:
+          TEST_SSH_HOST: localhost
+          TEST_SSH_USER: testuser
+          TEST_SSH_PASSWORD: testpass
+          TEST_SSH_PORT: 2222
+        run: |
+          pytest tests/integration/ -m integration -v --tb=short
+
+      - name: Tear down test target
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml down --volumes
+
+  integration-remote:
+    name: Integration (Remote SSH target)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run integration tests against remote target
+        env:
+          TEST_SSH_HOST: ${{ github.event.inputs.ssh_host }}
+          TEST_SSH_USER: ${{ github.event.inputs.ssh_user }}
+          TEST_SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          TEST_SSH_PORT: ${{ github.event.inputs.ssh_port }}
+        run: |
+          pytest tests/integration/ -m integration -v --tb=short

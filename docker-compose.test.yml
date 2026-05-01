@@ -1,0 +1,41 @@
+# Docker Compose for integration test infrastructure
+#
+# Spins up an SSH server with Java 21 and an example app (math-game.jar).
+# This allows integration tests to run in a self-contained environment
+# without relying on a specific external server.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build -d
+#   export TEST_SSH_HOST=localhost
+#   export TEST_SSH_USER=testuser
+#   export TEST_SSH_PASSWORD=testpass
+#   pytest tests/integration/ -m integration -v
+#   docker compose -f docker-compose.test.yml down
+#
+# In CI (GitHub Actions):
+#   services:
+#     test-target:
+#       image: narcissux/arthas-test-target:latest
+#       ports: ['2222:22']
+
+services:
+  test-target:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-target
+    container_name: arthas-test-target
+    ports:
+      - "2222:22"
+    environment:
+      - SSH_USER=testuser
+      - SSH_PASSWORD=testpass
+    healthcheck:
+      test: ["CMD", "sshd", "-t"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    privileged: true   # Required for Java attach (ptrace)
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined

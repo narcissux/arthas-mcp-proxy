@@ -58,6 +58,28 @@ python -m arthas_mcp_proxy --transport sse --port 8000
 
 ## Development
 
+### Running tests
+
+```bash
+# Unit tests only (mocked, no external dependencies)
+pytest tests/ --ignore=tests/integration/
+
+# Integration tests (requires a real SSH target with Java)
+export TEST_SSH_HOST=your-server
+export TEST_SSH_USER=your-username
+export TEST_SSH_PASSWORD=your-password
+pytest tests/integration/ -m integration -v
+
+# Self-contained integration tests via Docker
+export TEST_SSH_HOST=localhost
+export TEST_SSH_USER=testuser
+export TEST_SSH_PASSWORD=testpass
+docker compose -f docker-compose.test.yml up --build -d
+pytest tests/integration/ -m integration -v
+```
+
+### Code quality
+
 ```bash
 # Install dev dependencies
 pip install -e ".[dev]"
@@ -89,14 +111,41 @@ pytest --cov=arthas_mcp_proxy --cov-report=html
 │       ├── ssh_pool.py          # SSH connection pool
 │       └── decorators.py        # @require_session and other decorators
 ├── tests/
-│   ├── conftest.py              # Shared fixtures
+│   ├── conftest.py              # Shared fixtures (mock SSH session, state cleanup)
 │   ├── test_decorators.py       # @require_session tests
 │   ├── test_arthas_client.py    # Concurrency & logic tests
-│   └── test_ssh_pool.py         # Connection pool tests
+│   ├── test_ssh_pool.py         # Connection pool tests
+│   └── integration/
+│       ├── conftest.py          # Integration env validation & Docker check
+│       └── test_real_jvm.py     # Real JVM diagnostic tests via SSH
 ├── pyproject.toml               # Project config, deps, tool settings
 ├── Dockerfile
-└── docker-compose.yml
+├── docker-compose.yml           # Production deployment
+├── docker-compose.test.yml      # Test infrastructure (SSH + Java container)
+├── Dockerfile.test-target       # Test target image (Java + math-game.jar)
+└── README.md
 ```
+
+### Test categories
+
+| Category | Command | Requirements |
+|----------|---------|-------------|
+| Unit tests | `pytest tests/ --ignore=tests/integration/` | None (fully mocked) |
+| Integration (remote) | `pytest tests/integration/ -m integration` | SSH target with Java |
+| Integration (Docker) | `docker compose -f docker-compose.test.yml up` + pytest | Docker daemon |
+
+### Environment variables for integration tests
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TEST_SSH_HOST` | Yes | — | Target hostname or IP |
+| `TEST_SSH_USER` | Yes | — | SSH username |
+| `TEST_SSH_PASSWORD` | Yes | — | SSH password |
+| `TEST_SSH_PORT` | No | 22 | SSH port |
+| `TEST_TARGET_PID` | No | auto | Specific PID to diagnose |
+
+**Security**: Never commit credentials. Use environment variables or a `.env`
+file (ignored by `.gitignore`).
 
 ## License
 

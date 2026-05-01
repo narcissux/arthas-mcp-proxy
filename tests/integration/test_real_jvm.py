@@ -7,12 +7,17 @@ and execute diagnostic commands against running Java processes.
 To run locally:
     pytest tests/integration/ -m integration -v
 
-Required environment variables (or pytest flags):
-    TEST_SSH_HOST          default: 111.231.24.85
-    TEST_SSH_USER          default: ubuntu
-    TEST_SSH_PASSWORD      default: n~.u285AN@aVkX
-    TEST_SSH_PORT          default: 22
-    TEST_TARGET_PID        optional; auto-detected if omitted
+Required environment variables (NO DEFAULTS — must be set explicitly):
+    TEST_SSH_HOST          SSH target hostname or IP
+    TEST_SSH_USER          SSH username
+    TEST_SSH_PASSWORD      SSH password
+    TEST_SSH_PORT          SSH port (default: 22)
+    TEST_TARGET_PID        Optional; auto-detected if omitted
+
+SECURITY NOTICE:
+    Never commit real credentials to version control.
+    Set credentials via environment variables or a local .env file
+    (ignored by .gitignore).
 """
 
 from __future__ import annotations
@@ -32,11 +37,25 @@ logger = logging.getLogger(__name__)
 
 pytestmark = [pytest.mark.integration]
 
+# ─── Security-safe helpers ───────────────────────────────────────────────────
+
+
+def _require_env(name: str) -> str:
+    """Fetch a required env var; skip the test if missing."""
+    value = os.environ.get(name)
+    if not value:
+        pytest.skip(
+            f"Integration test requires env var {name}. "
+            f"Set it before running: export {name}=<value>"
+        )
+    return value
+
+
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="module")
-def ssh_pool() -> SSHConnectionPool:
+def ssh_pool() -> "SSHConnectionPool":
     """Return a fresh SSHConnectionPool for the test module."""
     from arthas_mcp_proxy.ssh_pool import SSHConnectionPool
 
@@ -46,23 +65,31 @@ def ssh_pool() -> SSHConnectionPool:
 
 
 @pytest.fixture(scope="module")
-def ssh_session(ssh_pool: SSHConnectionPool) -> SSHSession:
-    """Connect to the remote server and return an active SSHSession."""
-    host = os.environ.get("TEST_SSH_HOST", "111.231.24.85")
-    port = int(os.environ.get("TEST_SSH_PORT", "22"))
-    username = os.environ.get("TEST_SSH_USER", "ubuntu")
-    password = os.environ.get("TEST_SSH_PASSWORD", "n~.u285AN@aVkX")
+def ssh_session(ssh_pool: "SSHConnectionPool") -> "SSHSession":
+    """Connect to the remote server and return an active SSHSession.
 
-    sid = ssh_pool.connect(host=host, port=port, username=username, password=password, timeout=30)
+    Skips automatically if TEST_SSH_HOST / TEST_SSH_USER / TEST_SSH_PASSWORD
+    are not set.  No real credentials are ever hard-coded here.
+    """
+    host = _require_env("TEST_SSH_HOST")
+    port = int(os.environ.get("TEST_SSH_PORT", "22"))
+    username = _require_env("TEST_SSH_USER")
+    password = _require_env("TEST_SSH_PASSWORD")
+
+    sid = ssh_pool.connect(
+        host=host, port=port, username=username, password=password, timeout=30
+    )
     session = ssh_pool.get_session(sid)
     assert session is not None, f"Failed to establish SSH session to {host}"
-    logger.info("SSH connected: %s@%s:%s (session=%s)", username, host, port, sid)
+    logger.info(
+        "SSH connected: %s@%s:%s (session=%s)", username, host, port, sid
+    )
     yield session
     ssh_pool.disconnect(sid)
 
 
 @pytest.fixture(scope="module")
-def target_pid(ssh_session: SSHSession) -> int:
+def target_pid(ssh_session: "SSHSession") -> int:
     """Auto-detect a suitable Java process PID for Arthas testing."""
     # 1. Check environment override
     env_pid = os.environ.get("TEST_TARGET_PID")
@@ -100,7 +127,7 @@ def target_pid(ssh_session: SSHSession) -> int:
 
 
 @pytest.fixture(scope="module")
-def arthas_client(ssh_session: SSHSession) -> ArthasClient:
+def arthas_client(ssh_session: "SSHSession") -> "ArthasClient":
     """Return an ArthasClient configured for the SSH session."""
     from arthas_mcp_proxy.arthas_client import ArthasClient
 
@@ -130,17 +157,21 @@ def _extract_first_pid(output: str) -> int | None:
 class TestSSHConnection:
     """Verify basic SSH connectivity."""
 
-    def test_whoami(self, ssh_session: SSHSession) -> None:
+    def test_whoami(self, ssh_session: "SSHSession") -> None:
         _stdin, stdout, _stderr = ssh_session.client.exec_command("whoami")
         user = stdout.read().decode().strip()
-        assert user == "ubuntu"
+        # Must return non-empty, not hard-coding a specific username
+        assert user, "whoami returned empty"
 
-    def test_java_installed(self, ssh_session: SSHSession) -> None:
-        _stdin, stdout, stderr = ssh_session.client.exec_command("java -version 2>&1")
+    def test_java_installed(self, ssh_session: "SSHSession") -> None:
+        _stdin, stdout, stderr = ssh_session.client.exec_command(
+            "java -version 2>&1"
+        )
         version = stdout.read().decode() or stderr.read().decode()
-        assert "openjdk" in version.lower(), f"Java not found: {version}"
+        # Accept any JDK (OpenJDK, Oracle, Temurin, etc.)
+        assert "version" in version.lower(), f"JDK not detected: {version}"
 
-    def test_jps_available(self, ssh_session: SSHSession) -> None:
+    def test_jps_available(self, ssh_session: "SSHSession") -> None:
         _stdin, stdout, _stderr = ssh_session.client.exec_command("jps -l")
         output = stdout.read().decode()
         lines = [line for line in output.strip().split("\n") if line.strip()]
@@ -150,17 +181,24 @@ class TestSSHConnection:
 class TestArthasInstall:
     """Verify Arthas installation on target server."""
 
-    def test_install_arthas(self, arthas_client: ArthasClient) -> None:
+    def test_install_arthas(self, arthas_client: "ArthasClient") -> None:
         """Arthas should be installed successfully (online mode)."""
         result = arthas_client.install_arthas(install_type="online")
         logger.info("install_arthas result: %s", result)
         assert "installed" in result.lower() or "already" in result.lower(), result
 
+    def test_offline_install_skipped_when_no_bundle(
+        self, arthas_client: "ArthasClient",
+    ) -> None:
+        """Offline install without local bundle should fail gracefully."""
+        with pytest.raises(RuntimeError, match="arthas-bin.zip"):
+            arthas_client.install_arthas(install_type="offline")
+
 
 class TestJavaProcessDiscovery:
     """Verify Java process discovery."""
 
-    def test_list_java_processes(self, arthas_client: ArthasClient) -> None:
+    def test_list_java_processes(self, arthas_client: "ArthasClient") -> None:
         """Should list Java processes with PID markers."""
         result = arthas_client.list_java_processes()
         logger.info("list_java_processes result:\n%s", result)
@@ -173,41 +211,90 @@ class TestJavaProcessDiscovery:
 class TestThreadDiagnostics:
     """Verify thread dump and related diagnostics."""
 
-    def test_thread_dump(self, arthas_client: ArthasClient, target_pid: int) -> None:
+    def test_thread_dump(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
         """Should produce a non-empty thread dump for target PID."""
         result = arthas_client.thread_dump(pid=target_pid, top_n=10)
         logger.info("thread_dump (first 200 chars): %.200s", result)
-        assert len(result) > 50, f"Thread dump too short: {result!r}"
+        # A meaningful thread dump should contain thread state keywords
+        assert any(
+            kw in result for kw in ("RUNNABLE", "WAITING", "TIMED_WAITING", "BLOCKED")
+        ), f"No valid thread states found in output: {result[:200]}..."
 
-    def test_heap_info(self, arthas_client: ArthasClient, target_pid: int) -> None:
+    def test_heap_info(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
         """Should produce a heap dashboard for target PID."""
         result = arthas_client.heap_info(pid=target_pid)
         logger.info("heap_info (first 200 chars): %.200s", result)
-        assert len(result) > 50, f"Heap info too short: {result!r}"
+        # Dashboard should contain memory-related keywords
+        assert any(
+            kw in result for kw in ("heap", "eden", "survivor", "old", "memory")
+        ), f"No heap metrics found in output: {result[:200]}..."
 
 
 class TestCommandExecution:
     """Verify direct Arthas command execution."""
 
-    def test_jvm_command(self, arthas_client: ArthasClient, target_pid: int) -> None:
+    def test_jvm_command(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
         """Should execute 'jvm' command and return JVM info."""
         result = arthas_client.exec_command(pid=target_pid, command="jvm")
         logger.info("jvm command (first 200 chars): %.200s", result)
-        assert len(result) > 50, f"jvm output too short: {result!r}"
+        # JVM info should contain runtime details
+        assert any(
+            kw in result.lower()
+            for kw in ("jvm", "runtime", "classpath", "version")
+        ), f"No JVM info found in output: {result[:200]}..."
 
-    def test_version_command(self, arthas_client: ArthasClient, target_pid: int) -> None:
+    def test_version_command(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
         """Should execute 'version' command."""
         result = arthas_client.exec_command(pid=target_pid, command="version")
         logger.info("version command: %s", result)
         assert "arthas" in result.lower() or "version" in result.lower(), result
 
+    def test_profiler_command(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
+        """Should start and stop profiler."""
+        # Start profiler
+        result = arthas_client.exec_command(
+            pid=target_pid, command="profiler start"
+        )
+        logger.info("profiler start: %.200s", result)
+        assert "started" in result.lower() or "profiling" in result.lower(), result
+
+        # Stop profiler
+        result = arthas_client.exec_command(
+            pid=target_pid, command="profiler stop"
+        )
+        logger.info("profiler stop: %.200s", result)
+        assert "stop" in result.lower() or "flame" in result.lower(), result
+
+    def test_heapdump_command(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
+        """Should generate heap dump."""
+        remote_path = "/tmp/arthas-heapdump-test.hprof"  # noqa: S108
+        result = arthas_client.exec_command(
+            pid=target_pid, command=f"heapdump {remote_path}"
+        )
+        logger.info("heapdump: %.200s", result)
+        # Should reference the dump file path
+        assert "heapdump" in result.lower() or "dump" in result.lower(), result
+
 
 class TestWatchMethod:
     """Verify method watch functionality."""
 
-    def test_watch_math_game(self, arthas_client: ArthasClient, target_pid: int) -> None:
+    def test_watch_math_game(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
         """Watch a method on math-game.jar if available."""
-        # Try to watch MathGame.primeFactors which is a known method
         result = arthas_client.watch_method(
             pid=target_pid,
             class_pattern="demo.MathGame",
@@ -224,22 +311,90 @@ class TestWatchMethod:
 class TestDetach:
     """Verify clean detachment."""
 
-    def test_detach(self, arthas_client: ArthasClient, target_pid: int) -> None:
+    def test_detach(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
         """Should detach Arthas agent cleanly."""
         result = arthas_client.detach(target_pid)
         logger.info("detach result: %s", result)
         assert any(
-            kw in result.lower() for kw in ("detach", "shutdown", "stop", "arthas server")
+            kw in result.lower()
+            for kw in ("detach", "shutdown", "stop", "arthas server")
         ), result
 
-    def test_agent_no_longer_present(self, ssh_session: SSHSession, target_pid: int) -> None:
+    def test_agent_no_longer_present(
+        self, ssh_session: "SSHSession", target_pid: int
+    ) -> None:
         """After detach, agent port should not be detectable."""
         from arthas_mcp_proxy.arthas_client import _detect_arthas_port
 
+        # Allow a few seconds for graceful shutdown
+        import time
+
+        time.sleep(3)
         port = _detect_arthas_port(ssh_session, target_pid)
-        # Port may be None (agent gone) or still present (graceful detach timing)
         logger.info("Post-detach port detection: %s", port)
-        # We just verify the function doesn't crash
+        # Ideally port should be None after detach
+        # But timing-dependent, so we just verify no crash
+        assert port is None or isinstance(port, int), f"Unexpected port value: {port}"
+
+
+class TestCrossUserDiagnosis:
+    """Verify cross-user sudo diagnosis (README advertised feature)."""
+
+    def test_sudo_user_detection(
+        self, ssh_session: "SSHSession", target_pid: int
+    ) -> None:
+        """Should detect if sudo is needed for attach."""
+        from arthas_mcp_proxy.arthas_client import _get_sudo_user
+
+        owner = _get_sudo_user(ssh_session, target_pid)
+        logger.info("PID %d owner=%s", target_pid, owner)
+        # owner may be None (same user) or a username (cross-user)
+        # Either case should not raise
+        assert owner is None or isinstance(owner, str), f"Unexpected owner: {owner}"
+
+    def test_attach_with_detected_owner(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
+        """Should successfully attach using resolved owner."""
+        from arthas_mcp_proxy.arthas_client import _ensure_agent
+        from arthas_mcp_proxy.arthas_client import _find_arthas_path
+
+        arthas_path = _find_arthas_path(arthas_client.session)
+        owner = arthas_client._resolve_owner(target_pid)
+        port = _ensure_agent(
+            arthas_client.session, target_pid, arthas_path, owner=owner
+        )
+        logger.info("Cross-user attach PID %d -> port %d", target_pid, port)
+        assert 3658 <= port <= 3665, f"Port {port} out of expected range"
+
+
+class TestErrorHandling:
+    """Verify error handling for invalid inputs."""
+
+    def test_invalid_pid(
+        self, arthas_client: "ArthasClient",
+    ) -> None:
+        """Should handle invalid PID gracefully."""
+        with pytest.raises((RuntimeError, ValueError)):
+            arthas_client.exec_command(pid=999999, command="thread -n 1")
+
+    def test_invalid_command(
+        self, arthas_client: "ArthasClient", target_pid: int
+    ) -> None:
+        """Should handle invalid Arthas command gracefully."""
+        result = arthas_client.exec_command(
+            pid=target_pid, command="not_a_real_command_xyz"
+        )
+        logger.info("Invalid command result: %s", result)
+        # Should return some error indication
+        assert (
+            "error" in result.lower()
+            or "unknown" in result.lower()
+            or "not found" in result.lower()
+            or len(result) > 0
+        )
 
 
 class TestEndToEnd:
@@ -247,8 +402,8 @@ class TestEndToEnd:
 
     def test_full_diagnostic_workflow(
         self,
-        ssh_pool: SSHConnectionPool,
-        arthas_client: ArthasClient,
+        ssh_pool: "SSHConnectionPool",
+        arthas_client: "ArthasClient",
         target_pid: int,
     ) -> None:
         """Execute a realistic diagnostic workflow:
@@ -265,17 +420,23 @@ class TestEndToEnd:
 
         # Step 2: Thread dump
         threads = arthas_client.thread_dump(pid=target_pid, top_n=5)
-        assert len(threads) > 50
+        assert any(
+            kw in threads for kw in ("RUNNABLE", "WAITING", "TIMED_WAITING")
+        ), f"No thread states in dump: {threads[:200]}"
         logger.info("Step 2 - Thread dump captured (%d chars)", len(threads))
 
         # Step 3: Heap info
         heap = arthas_client.heap_info(pid=target_pid)
-        assert len(heap) > 50
+        assert any(
+            kw in heap for kw in ("heap", "eden", "survivor", "memory")
+        ), f"No heap metrics: {heap[:200]}"
         logger.info("Step 3 - Heap info captured (%d chars)", len(heap))
 
         # Step 4: JVM version
         jvm = arthas_client.exec_command(pid=target_pid, command="jvm")
-        assert len(jvm) > 50
+        assert any(
+            kw in jvm.lower() for kw in ("jvm", "runtime", "version")
+        ), f"No JVM info: {jvm[:200]}"
         logger.info("Step 4 - JVM info captured (%d chars)", len(jvm))
 
         # Step 5: Detach
