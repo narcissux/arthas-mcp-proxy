@@ -670,7 +670,8 @@ class ArthasClient:
             "2>/dev/null) && "
             "test -f arthas-bin.zip && unzip -o -q arthas-bin.zip && "
             "mkdir -p ~/.arthas && "
-            "cp -rf /tmp/arthas-install/arthas/* ~/.arthas/ && "
+            "(cp -rf /tmp/arthas-install/arthas/* ~/.arthas/ 2>/dev/null \
+            || cp -rf /tmp/arthas-install/* ~/.arthas/) && "
             "chmod +x ~/.arthas/as.sh && echo INSTALLED"
         )
         stdout, stderr, rc = _exec_ssh(self.session, cmd, timeout=120)
@@ -691,7 +692,8 @@ class ArthasClient:
             "rm -rf /tmp/arthas-install && mkdir -p /tmp/arthas-install && "
             "cd /tmp/arthas-install && unzip -o -q /tmp/arthas-bin.zip && "
             "mkdir -p ~/.arthas && "
-            "cp -rf /tmp/arthas-install/arthas/* ~/.arthas/ && "
+            "(cp -rf /tmp/arthas-install/arthas/* ~/.arthas/ 2>/dev/null \
+            || cp -rf /tmp/arthas-install/* ~/.arthas/) && "
             "chmod +x ~/.arthas/as.sh && echo INSTALLED"
         )
         stdout, stderr, rc = _exec_ssh(self.session, cmd, timeout=60)

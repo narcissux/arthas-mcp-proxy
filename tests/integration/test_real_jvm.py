@@ -72,7 +72,7 @@ class TestArthasInstall:
         paths = [
             "/tmp/arthas-bin.zip",
             "/tmp/arthas-install",
-            "~/.arthas",
+            "$HOME/.arthas",
         ]
         for p in paths:
             ssh_session.client.exec_command(f"rm -rf {p}")
