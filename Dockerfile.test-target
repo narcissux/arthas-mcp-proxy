@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     netcat-openbsd \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Create test user
@@ -36,32 +37,8 @@ RUN curl -fsSL -o /tmp/arthas-bin.zip \
     unzip -q -d /tmp/arthas-all /tmp/arthas-bin.zip && \
     rm /tmp/arthas-bin.zip
 
-COPY --chmod=755 <<'EOF' /entrypoint.sh
-#!/bin/bash
-set -e
-
-# Set test user password from environment
-if [ -n "$SSH_PASSWORD" ]; then
-    echo "testuser:$SSH_PASSWORD" | chpasswd
-fi
-
-# Start SSH daemon
-/usr/sbin/sshd
-
-# Start sample Java application as testuser
-su - testuser -c "nohup java -jar /opt/math-game.jar > /dev/null 2>&1 &"
-
-# Verify Java process started
-sleep 2
-if pgrep -f math-game >/dev/null; then
-    echo "math-game.jar started successfully"
-else
-    echo "WARNING: math-game.jar may not have started"
-fi
-
-# Keep container alive
-tail -f /dev/null
-EOF
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 22
 ENTRYPOINT ["/entrypoint.sh"]

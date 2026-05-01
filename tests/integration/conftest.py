@@ -71,20 +71,37 @@ def _require_env(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _docker_available() -> bool:
-    docker = shutil.which("docker")
-    if not docker:
-        return False
+def _docker_compose_cmd() -> list[str]:
+    """Return the correct docker compose command for this system.
+
+    Docker Compose v2: ``docker compose`` (plugin, space)
+    Docker Compose v1: ``docker-compose`` (standalone, hyphen)
+    """
+    # Prefer v2 plugin
     try:
         subprocess.run(
-            [docker, "version"],
+            ["docker", "compose", "version"],
             capture_output=True,
             timeout=5,
             check=True,
         )
-        return True
-    except (subprocess.CalledProcessError, OSError):
-        return False
+        return ["docker", "compose"]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    # Fall back to v1 standalone
+    docker_compose = shutil.which("docker-compose")
+    if docker_compose:
+        try:
+            subprocess.run(
+                [docker_compose, "version"],
+                capture_output=True,
+                timeout=5,
+                check=True,
+            )
+            return [docker_compose]
+        except (subprocess.CalledProcessError, OSError):
+            pass
+    pytest.skip("Neither 'docker compose' nor 'docker-compose' is available")
 
 
 def _wait_for_ssh(host: str, port: int, timeout: int = 60) -> bool:
@@ -119,8 +136,7 @@ def docker_test_target(request: pytest.FixtureRequest) -> dict[str, str]:
         yield {}
         return
 
-    if not _docker_available():
-        pytest.skip("Docker daemon not available; cannot start test target")
+    compose_cmd = _docker_compose_cmd()
 
     compose_file = os.path.join(
         os.path.dirname(__file__), "..", "..", "docker-compose.test.yml"
@@ -131,7 +147,7 @@ def docker_test_target(request: pytest.FixtureRequest) -> dict[str, str]:
     logger.info("Building test target container...")
     try:
         subprocess.run(
-            ["docker", "compose", "-f", compose_file, "up", "--build", "-d"],
+            [*compose_cmd, "-f", compose_file, "up", "--build", "-d"],
             check=True,
             capture_output=True,
             text=True,
@@ -146,7 +162,7 @@ def docker_test_target(request: pytest.FixtureRequest) -> dict[str, str]:
     logger.info("Waiting for SSH on localhost:2222 ...")
     if not _wait_for_ssh("localhost", 2222, timeout=60):
         subprocess.run(
-            ["docker", "compose", "-f", compose_file, "down", "--volumes"],
+            [*compose_cmd, "-f", compose_file, "down", "--volumes"],
             capture_output=True,
         )
         pytest.skip("SSH port 2222 not ready after 60s")
@@ -169,7 +185,7 @@ def docker_test_target(request: pytest.FixtureRequest) -> dict[str, str]:
     # Teardown
     logger.info("Tearing down Docker test target...")
     subprocess.run(
-        ["docker", "compose", "-f", compose_file, "down", "--volumes"],
+        [*compose_cmd, "-f", compose_file, "down", "--volumes"],
         capture_output=True,
     )
 

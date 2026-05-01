@@ -121,6 +121,7 @@ pytest --cov=arthas_mcp_proxy --cov-report=html
 │       ├── conftest.py          # Integration env validation & Docker check
 │       └── test_real_jvm.py     # Real JVM diagnostic tests via SSH
 ├── pyproject.toml               # Project config, deps, tool settings
+├── entrypoint.sh                # Test target container startup script
 ├── Dockerfile
 ├── docker-compose.yml           # Production deployment
 ├── docker-compose.test.yml      # Test infrastructure (SSH + Java container)

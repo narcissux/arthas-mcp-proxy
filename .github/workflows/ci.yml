@@ -82,9 +82,19 @@ jobs:
 
       - name: Build and start test target
         run: |
-          docker compose -f docker-compose.test.yml up --build -d
+          # Detect docker compose command (v2 plugin vs v1 standalone)
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif docker-compose version >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "No docker compose found, skipping"
+            exit 0
+          fi
+          echo "Using: $COMPOSE"
+          $COMPOSE -f docker-compose.test.yml up --build -d
           echo "=== Container status ==="
-          docker compose -f docker-compose.test.yml ps
+          $COMPOSE -f docker-compose.test.yml ps
           echo "=== Waiting for SSH... ==="
           sleep 15
           for i in $(seq 1 60); do
@@ -105,4 +115,8 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          docker compose -f docker-compose.test.yml down --volumes || true
+          if docker compose version >/dev/null 2>&1; then
+            docker compose -f docker-compose.test.yml down --volumes || true
+          elif docker-compose version >/dev/null 2>&1; then
+            docker-compose -f docker-compose.test.yml down --volumes || true
+          fi

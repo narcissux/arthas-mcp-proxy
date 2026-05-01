@@ -43,7 +43,17 @@ jobs:
 
       - name: Build and start test target
         run: |
-          docker compose -f docker-compose.test.yml up --build -d
+          # Detect docker compose command (v2 plugin vs v1 standalone)
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif docker-compose version >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "No docker compose found"
+            exit 1
+          fi
+          echo "Using: $COMPOSE"
+          $COMPOSE -f docker-compose.test.yml up --build -d
           # Wait for SSH to be ready
           for i in {1..30}; do
             if nc -z localhost 2222; then
@@ -66,7 +76,11 @@ jobs:
       - name: Tear down test target
         if: always()
         run: |
-          docker compose -f docker-compose.test.yml down --volumes
+          if docker compose version >/dev/null 2>&1; then
+            docker compose -f docker-compose.test.yml down --volumes || true
+          elif docker-compose version >/dev/null 2>&1; then
+            docker-compose -f docker-compose.test.yml down --volumes || true
+          fi
 
   integration-remote:
     name: Integration (Remote SSH target)
