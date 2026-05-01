@@ -101,6 +101,8 @@ class TestArthasInstall:
         self._clean_arthas_residuals(ssh_session)
         with pytest.raises(RuntimeError, match="arthas-bin.zip"):
             arthas_client.install_arthas(install_type="offline")
+        # Re-install Arthas so subsequent tests still have it available
+        arthas_client.install_arthas(install_type="online")
 
 
 class TestJavaProcessDiscovery:
