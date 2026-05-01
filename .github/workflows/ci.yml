@@ -30,7 +30,11 @@ jobs:
           fi
 
       - name: Ruff format check
-        run: ruff format --check src/ tests/
+        run: |
+          ruff format src/ tests/ || true
+          git diff --stat
+          git checkout -- .
+          ruff format --check src/ tests/
 
       - name: Mypy type check
         run: mypy --show-error-codes src/arthas_mcp_proxy

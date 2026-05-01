@@ -1,0 +1,82 @@
+2026-05-01 23:04:28,544 [INFO] arthas_mcp_proxy.server: Starting Arthas MCP Proxy (transport=sse)
+INFO:     Started server process [805481]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     183.128.105.173:47788 - "GET /sse HTTP/1.1" 200 OK
+INFO:     183.128.105.173:47798 - "GET /sse HTTP/1.1" 200 OK
+INFO:     183.128.105.173:47804 - "GET /sse HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35814 - "GET /sse HTTP/1.1" 200 OK
+INFO:     182.92.80.50:5568 - "GET /sse HTTP/1.1" 200 OK
+INFO:     81.71.163.34:32984 - "GET /sse HTTP/1.1" 200 OK
+INFO:     81.71.163.34:33000 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:07:57,235 [WARNING] root: Failed to validate request: Received request before initialization was complete
+INFO:     81.71.163.34:33010 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+INFO:     81.71.163.34:33014 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:07:58,844 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:07:58,845 [INFO] arthas_mcp_proxy.ssh_pool: SSH connection pool initialized (idle_timeout=300s, max_sessions=20, threads=2)
+2026-05-01 23:07:58,845 [INFO] arthas_mcp_proxy.ssh_pool: Connecting to ubuntu@111.231.24.85:22 using password auth
+2026-05-01 23:07:58,862 [INFO] paramiko.transport: Connected (version 2.0, client OpenSSH_9.6p1)
+2026-05-01 23:07:58,968 [INFO] paramiko.transport: Authentication (password) successful!
+2026-05-01 23:07:58,969 [INFO] arthas_mcp_proxy.ssh_pool: New SSH session: ubuntu@111.231.24.85:22 (id=89d136f3, threads=3)
+INFO:     81.71.163.34:39826 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:01,899 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:39836 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:06,950 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:59806 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:12,007 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:59810 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:20,070 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:58158 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:30,128 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:34350 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:40,180 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:33574 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:08:48,233 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     183.128.105.173:53798 - "GET /sse HTTP/1.1" 200 OK
+INFO:     81.71.163.34:39490 - "POST /messages/?session_id=fa2e318bd32342dba07ad4aba92e5246 HTTP/1.1" 202 Accepted
+2026-05-01 23:09:03,288 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:09:03,288 [INFO] arthas_mcp_proxy.ssh_pool: Session 89d136f3 disconnected (threads=3)
+INFO:     81.71.163.34:60628 - "GET /sse HTTP/1.1" 200 OK
+INFO:     81.71.163.34:60632 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+2026-05-01 23:09:57,297 [WARNING] root: Failed to validate request: Received request before initialization was complete
+INFO:     81.71.163.34:60648 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+INFO:     81.71.163.34:60658 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+2026-05-01 23:09:58,907 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:09:58,908 [INFO] arthas_mcp_proxy.ssh_pool: Connecting to ubuntu@111.231.24.85:22 using password auth
+2026-05-01 23:09:58,922 [INFO] paramiko.transport: Connected (version 2.0, client OpenSSH_9.6p1)
+2026-05-01 23:09:59,028 [INFO] paramiko.transport: Authentication (password) successful!
+2026-05-01 23:09:59,029 [INFO] arthas_mcp_proxy.ssh_pool: New SSH session: ubuntu@111.231.24.85:22 (id=8fb4d4db, threads=3)
+INFO:     81.71.163.34:39472 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+2026-05-01 23:10:01,963 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:10:01,963 [INFO] arthas_mcp_proxy.ssh_pool: SSH connection pool initialized (idle_timeout=300s, max_sessions=20, threads=4)
+2026-05-01 23:10:01,963 [WARNING] arthas_mcp_proxy.ssh_pool: Session 8fb4d4db not found
+INFO:     81.71.163.34:39486 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+2026-05-01 23:10:07,014 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:10:07,014 [WARNING] arthas_mcp_proxy.ssh_pool: Session 8fb4d4db not found
+INFO:     81.71.163.34:49378 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+2026-05-01 23:10:12,069 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:10:12,069 [WARNING] arthas_mcp_proxy.ssh_pool: Session 8fb4d4db not found
+INFO:     81.71.163.34:49388 - "POST /messages/?session_id=703178645523403ca0918b6080a36d10 HTTP/1.1" 202 Accepted
+2026-05-01 23:10:20,120 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:10:20,120 [INFO] arthas_mcp_proxy.ssh_pool: Session 8fb4d4db disconnected (threads=4)
+INFO:     81.71.163.34:47956 - "GET /sse HTTP/1.1" 200 OK
+INFO:     81.71.163.34:47962 - "POST /messages/?session_id=f5195734cbe942a98005dfea387b2ceb HTTP/1.1" 202 Accepted
+2026-05-01 23:11:09,981 [WARNING] root: Failed to validate request: Received request before initialization was complete
+INFO:     81.71.163.34:47970 - "POST /messages/?session_id=f5195734cbe942a98005dfea387b2ceb HTTP/1.1" 202 Accepted
+INFO:     81.71.163.34:59652 - "POST /messages/?session_id=f5195734cbe942a98005dfea387b2ceb HTTP/1.1" 202 Accepted
+2026-05-01 23:11:11,594 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:11:11,594 [INFO] arthas_mcp_proxy.ssh_pool: Connecting to ubuntu@111.231.24.85:22 using password auth
+2026-05-01 23:11:11,608 [INFO] paramiko.transport: Connected (version 2.0, client OpenSSH_9.6p1)
+2026-05-01 23:11:11,712 [INFO] paramiko.transport: Authentication (password) successful!
+2026-05-01 23:11:11,712 [INFO] arthas_mcp_proxy.ssh_pool: New SSH session: ubuntu@111.231.24.85:22 (id=f47eafe6, threads=4)
+INFO:     81.71.163.34:59656 - "POST /messages/?session_id=f5195734cbe942a98005dfea387b2ceb HTTP/1.1" 202 Accepted
+2026-05-01 23:11:14,654 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:11:14,654 [WARNING] arthas_mcp_proxy.ssh_pool: Session f47eafe6 not found
+INFO:     81.71.163.34:59660 - "POST /messages/?session_id=f5195734cbe942a98005dfea387b2ceb HTTP/1.1" 202 Accepted
+2026-05-01 23:11:19,706 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+INFO:     81.71.163.34:34150 - "POST /messages/?session_id=f5195734cbe942a98005dfea387b2ceb HTTP/1.1" 202 Accepted
+2026-05-01 23:11:24,759 [INFO] mcp.server.lowlevel.server: Processing request of type CallToolRequest
+2026-05-01 23:11:24,759 [WARNING] mcp.server.lowlevel.server: Tool 'tools/list' not listed, no validation will be performed
+2026-05-01 23:16:28,847 [INFO] arthas_mcp_proxy.ssh_pool: Idle session removed: ubuntu@111.231.24.85:22 (id=f47eafe6, idle=300s, threads=4)
+INFO:     112.126.72.180:20037 - "GET /sse HTTP/1.1" 200 OK
