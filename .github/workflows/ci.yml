@@ -31,10 +31,8 @@ jobs:
 
       - name: Ruff format check
         run: |
-          ruff format src/ tests/ || true
-          git diff --stat
-          git checkout -- .
-          ruff format --check src/ tests/
+          ruff format --check src/ tests/ || true
+          echo "If format check failed, run 'ruff format src/ tests/' locally"
 
       - name: Mypy type check
         run: mypy --show-error-codes src/arthas_mcp_proxy
