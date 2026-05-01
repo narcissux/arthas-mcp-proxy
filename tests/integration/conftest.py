@@ -15,9 +15,9 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1.  Mandatory env-var check (runs once when pytest starts collecting)
-# ══════════════════════════════════════════════════════════════════════════════
+
+# --- Mandatory env-var check (runs once when pytest starts collecting) ---
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Fail fast if a user runs integration tests without env vars.
@@ -37,26 +37,24 @@ def pytest_configure(config: pytest.Config) -> None:
 
     if missing:
         pytest.exit(
-            f"\n"
-            f"╔═══════════════════════════════════════════════════════════╗\n"
-            f"║  Integration tests require SSH target credentials.        ║\n"
-            f"║  Missing env vars: {', '.join(missing)}\n"
-            f"╚═══════════════════════════════════════════════════════════╝\n"
-            f"\n"
-            f"Set them before running integration tests:\n"
-            f"  export TEST_SSH_HOST=<your-server>\n"
-            f"  export TEST_SSH_USER=<username>\n"
-            f"  export TEST_SSH_PASSWORD=<password>\n"
-            f"  export TEST_SSH_PORT=22          # optional\n"
-            f"\n"
-            f"Or skip integration tests and run unit tests only:\n"
-            f"  pytest tests/ --ignore=tests/integration/\n",
+            "\n"
+            "Integration tests require SSH target credentials.\n"
+            f"Missing env vars: {', '.join(missing)}\n"
+            "\n"
+            "Set them before running integration tests:\n"
+            "  export TEST_SSH_HOST=<your-server>\n"
+            "  export TEST_SSH_USER=<username>\n"
+            "  export TEST_SSH_PASSWORD=<password>\n"
+            "  export TEST_SSH_PORT=22          # optional\n"
+            "\n"
+            "Or skip integration tests and run unit tests only:\n"
+            "  pytest tests/ --ignore=tests/integration/\n",
             returncode=1,
         )
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2.  Shared helper for containerised test target (future: testcontainers)
-# ══════════════════════════════════════════════════════════════════════════════
+
+# --- Shared helper for containerised test target (future: testcontainers) ---
+
 
 def _check_docker_available() -> bool:
     """Return True if Docker daemon is reachable."""
@@ -80,9 +78,8 @@ def docker_available() -> bool:
     return _check_docker_available()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 3.  Collect-only summary
-# ══════════════════════════════════════════════════════════════════════════════
+# --- Collect-only summary ---
+
 
 def pytest_collection_finish(session: pytest.Session) -> None:
     """Log a summary of collected integration tests."""
