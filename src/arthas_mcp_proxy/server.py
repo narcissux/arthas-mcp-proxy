@@ -23,7 +23,6 @@ import logging
 import os
 import sys
 import threading
-from typing import Optional
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -42,19 +41,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── Global state ────────────────────────────────────────────────────────────
-_transport_security = TransportSecuritySettings(
-    enable_dns_rebinding_protection=False
-)
+_transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 mcp = FastMCP("arthas-mcp-proxy", transport_security=_transport_security)
-_pool: Optional[SSHConnectionPool] = None
+_pool: SSHConnectionPool | None = None
 _pool_lock = threading.Lock()
 
 # Session credential cache (for fallback reconnection)
 _session_store: dict[str, dict] = {}
 _store_lock = threading.Lock()
-
-
-
 
 
 def get_connection_pool() -> SSHConnectionPool:
@@ -111,22 +105,22 @@ def _coerce_params(kwargs: dict) -> dict:
 def _dump_params(tool_name: str, kwargs: dict) -> None:
     """Log incoming parameters for debugging."""
     safe = {
-        k: f"{v[:20]}..." if isinstance(v, str) and len(v) > 50 else v
-        for k, v in kwargs.items()
+        k: f"{v[:20]}..." if isinstance(v, str) and len(v) > 50 else v for k, v in kwargs.items()
     }
     logger.info("[PARAMS] %s: %s", tool_name, safe)
 
 
 # ─── MCP Tools ───────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def connect_ssh(
     host: str,
     username: str = "root",
     port: int = 22,
-    password: Optional[str] = None,
-    key_path: Optional[str] = None,
-    key_string: Optional[str] = None,
+    password: str | None = None,
+    key_path: str | None = None,
+    key_string: str | None = None,
 ) -> str:
     """Establish an SSH connection to a remote server."""
     if isinstance(port, str):
@@ -158,14 +152,9 @@ def list_java_processes(session_id: str) -> str:
     if not session:
         creds = _get_session_credentials(session_id)
         if creds:
-            session = pool.get_session_by_host(
-                creds["host"], creds["port"], creds["username"]
-            )
+            session = pool.get_session_by_host(creds["host"], creds["port"], creds["username"])
         if not session:
-            return (
-                "Error: Session not found or expired. "
-                "Please reconnect using connect_ssh."
-            )
+            return "Error: Session not found or expired. Please reconnect using connect_ssh."
 
     try:
         client = ArthasClient(session)
@@ -216,7 +205,7 @@ def watch_method(
     method_pattern: str,
     watch_params: bool = True,
     watch_return: bool = True,
-    condition: Optional[str] = None,
+    condition: str | None = None,
     times: int = 5,
 ) -> str:
     """Watch method execution - monitor input parameters and/or return values."""
@@ -247,9 +236,7 @@ def watch_method(
 
 @mcp.tool()
 @require_session()
-def exec_command(
-    session: SSHSession, pid: int, command: str, timeout: int = 60
-) -> str:
+def exec_command(session: SSHSession, pid: int, command: str, timeout: int = 60) -> str:
     """
     Execute an arbitrary Arthas command on the target JVM.
 
@@ -343,7 +330,8 @@ def disconnect_ssh(session_id: str) -> str:
 
 # ─── Transport ───────────────────────────────────────────────────────────────
 
-def run_sse(host: str = "0.0.0.0", port: int = 8000, log_level: str = "info") -> None:
+
+def run_sse(host: str = "0.0.0.0", port: int = 8000, log_level: str = "info") -> None:  # noqa: S104
     app = mcp.sse_app()
     uvicorn.run(
         app,
@@ -360,11 +348,10 @@ async def run_stdio() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Arthas MCP Proxy Server")
+    parser.add_argument("--transport", choices=["sse", "stdio"], default="sse")
     parser.add_argument(
-        "--transport", choices=["sse", "stdio"], default="sse"
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("MCP_HOST", "0.0.0.0")
+        "--host",
+        default=os.environ.get("MCP_HOST", "0.0.0.0"),  # noqa: S104
     )
     parser.add_argument(
         "--port",
@@ -383,9 +370,7 @@ def main() -> None:
     logger.info("Starting Arthas MCP Proxy (transport=%s)", args.transport)
 
     if args.transport == "sse":
-        run_sse(
-            host=args.host, port=args.port, log_level=args.log_level.lower()
-        )
+        run_sse(host=args.host, port=args.port, log_level=args.log_level.lower())
     else:
         asyncio.run(run_stdio())
 

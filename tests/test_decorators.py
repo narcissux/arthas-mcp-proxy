@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from arthas_mcp_proxy.decorators import (
     require_session,
     set_fallback_credential_getter,
-    _fallback_credential_getter,
 )
 from arthas_mcp_proxy.ssh_pool import SSHConnectionPool
 
@@ -126,9 +123,12 @@ class TestFallbackCredentialGetter:
         # Clear first
         set_fallback_credential_getter(None)
         import arthas_mcp_proxy.decorators as dec_mod
+
         assert dec_mod._fallback_credential_getter is None
 
-        getter = lambda sid: {"host": "test"}
+        def getter(sid):
+            return {"host": "test"}
+
         set_fallback_credential_getter(getter)
         assert dec_mod._fallback_credential_getter is getter
 

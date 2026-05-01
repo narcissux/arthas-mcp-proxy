@@ -28,9 +28,10 @@ import os
 import re
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING
 
-from arthas_mcp_proxy.ssh_pool import SSHSession
+if TYPE_CHECKING:
+    from arthas_mcp_proxy.ssh_pool import SSHSession
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +110,12 @@ def _get_sudo_user(session: SSHSession, pid: int) -> str | None:
 
 def _get_arthas_base_dir() -> str:
     """Universal Arthas installation directory shared by all users."""
-    return "/tmp/arthas-all"
+    return "/tmp/arthas-all"  # noqa: S108
 
 
 def _find_arthas_path(session: SSHSession, owner: str | None = None) -> str:
     search_paths = [
-        "/tmp/arthas-all/as.sh",
+        "/tmp/arthas-all/as.sh",  # noqa: S108
         "~/.arthas/as.sh",
         "/opt/arthas/as.sh",
         "as.sh",
@@ -131,15 +132,13 @@ def _find_arthas_path(session: SSHSession, owner: str | None = None) -> str:
     raise RuntimeError("Arthas not found. Use install_arthas tool to install.")
 
 
-def _find_arthas_client_jar(
-    session: SSHSession, arthas_path: str, owner: str | None = None
-) -> str:
+def _find_arthas_client_jar(session: SSHSession, arthas_path: str, owner: str | None = None) -> str:
     base_dir = arthas_path.rsplit("/", 1)[0] if "/" in arthas_path else "."
 
     search_paths = [
         f"{base_dir}/arthas-client.jar",
         f"{base_dir}/lib/*/arthas/arthas-client.jar",
-        "/tmp/arthas-all/arthas-client.jar",
+        "/tmp/arthas-all/arthas-client.jar",  # noqa: S108
         "~/.arthas/arthas-client.jar",
     ]
     for pattern in search_paths:
@@ -174,14 +173,12 @@ def _find_local_arthas_bundle() -> str | None:
     return None
 
 
-def _copy_arthas_to_target(
-    session: SSHSession, owner: str | None = None
-) -> bool:
+def _copy_arthas_to_target(session: SSHSession, owner: str | None = None) -> bool:
     local_path = _find_local_arthas_bundle()
     if not local_path:
         return False
 
-    remote_path = "/tmp/arthas-bin.zip"
+    remote_path = "/tmp/arthas-bin.zip"  # noqa: S108
     try:
         logger.info("[SFTP] Pushing %s -> target:%s", local_path, remote_path)
         sftp = session.client.open_sftp()
@@ -225,15 +222,11 @@ def _get_java_home(session: SSHSession, owner: str | None = None) -> str:
     return ""
 
 
-def _detect_arthas_port(
-    session: SSHSession, pid: int, owner: str | None = None
-) -> int | None:
+def _detect_arthas_port(session: SSHSession, pid: int, owner: str | None = None) -> int | None:
     """Detect Arthas telnet port via ss -tlnp (with sudo for cross-user)."""
     ss_cmd = "sudo ss -tlnp" if owner else "ss -tlnp"
     cmd = f"{ss_cmd} 2>/dev/null | grep 'pid={pid},'"
-    stdout, _, rc = _exec_ssh(
-        session, cmd, timeout=10, sudo_user=None if owner else None
-    )
+    stdout, _, rc = _exec_ssh(session, cmd, timeout=10, sudo_user=None if owner else None)
     if rc != 0 or not stdout.strip():
         return None
 
@@ -274,9 +267,7 @@ def _find_free_port(session: SSHSession) -> int:
     raise RuntimeError("No free port in range 3658-3665")
 
 
-def _attach_agent(
-    session: SSHSession, pid: int, arthas_path: str, owner: str | None = None
-) -> int:
+def _attach_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | None = None) -> int:
     """Attach Arthas agent to target PID.
 
     THREAD SAFETY:
@@ -290,17 +281,21 @@ def _attach_agent(
     logger.info("[ATTACH] START pid=%d, owner=%s", pid, owner)
     t0 = time.time()
 
-    base_dir = arthas_path.rsplit("/", 1)[0] if "/" in arthas_path else "/tmp/arthas-all"
+    base_dir = arthas_path.rsplit("/", 1)[0] if "/" in arthas_path else "/tmp/arthas-all"  # noqa: S108
 
     port = _find_free_port(session)
     logger.info("[ATTACH] Found free port %d for PID %d", port, pid)
 
     attach_cmd = (
-        f"sudo -u {owner} env HOME=/tmp java -jar {base_dir}/arthas-boot.jar "
-        f"--attach-only --telnet-port {port} --http-port -1 --arthas-home {base_dir} {pid}"
-    ) if owner else (
-        f"java -jar {base_dir}/arthas-boot.jar "
-        f"--attach-only --telnet-port {port} --http-port -1 --arthas-home {base_dir} {pid}"
+        (
+            f"sudo -u {owner} env HOME=/tmp java -jar {base_dir}/arthas-boot.jar "
+            f"--attach-only --telnet-port {port} --http-port -1 --arthas-home {base_dir} {pid}"
+        )
+        if owner
+        else (
+            f"java -jar {base_dir}/arthas-boot.jar "
+            f"--attach-only --telnet-port {port} --http-port -1 --arthas-home {base_dir} {pid}"
+        )
     )
 
     logger.info("[ATTACH] Executing attach for PID %d on port %d", pid, port)
@@ -329,17 +324,11 @@ def _attach_agent(
         logger.debug("[ATTACH] Poll %d/15: port not ready for PID %d", attempt + 1, pid)
 
     elapsed = time.time() - t0
-    logger.error(
-        "[ATTACH] TIMEOUT pid=%d, port=%d, elapsed=%.1fs", pid, port, elapsed
-    )
-    raise RuntimeError(
-        f"Arthas agent for PID {pid} started on port {port} but detection timed out"
-    )
+    logger.error("[ATTACH] TIMEOUT pid=%d, port=%d, elapsed=%.1fs", pid, port, elapsed)
+    raise RuntimeError(f"Arthas agent for PID {pid} started on port {port} but detection timed out")
 
 
-def _ensure_agent(
-    session: SSHSession, pid: int, arthas_path: str, owner: str | None = None
-) -> int:
+def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | None = None) -> int:
     """Ensure Arthas agent is running for PID. Returns port number.
 
     Three-level lookup (fastest to slowest):
@@ -379,9 +368,7 @@ def _ensure_agent(
 
         existing_port = _detect_arthas_port(session, pid, owner)
         if existing_port is not None:
-            logger.info(
-                "[ENSURE] Agent appeared after lock PID %d -> port %d", pid, existing_port
-            )
+            logger.info("[ENSURE] Agent appeared after lock PID %d -> port %d", pid, existing_port)
             with _PID_STATE_LOCK:
                 _PID_STATE[pid] = {"port": existing_port, "owner": owner}
             return existing_port
@@ -426,9 +413,7 @@ def _exec_command(
     )
 
     logger.info("[CMD-EXEC] PID=%d, port=%d, cmd='%.60s'", pid, port, command)
-    stdout, stderr, rc = _exec_ssh(
-        session, exec_cmd, timeout=timeout + 10, sudo_user=owner
-    )
+    stdout, stderr, rc = _exec_ssh(session, exec_cmd, timeout=timeout + 10, sudo_user=owner)
 
     elapsed = time.time() - t0
     result = _filter_output(stdout)
@@ -600,9 +585,7 @@ class ArthasClient:
 
     def exec_command(self, pid: int, command: str, timeout: int = 60) -> str:
         owner = self._resolve_owner(pid)
-        logger.info(
-            "[API] exec_command pid=%d, cmd='%.40s', owner=%s", pid, command, owner
-        )
+        logger.info("[API] exec_command pid=%d, cmd='%.40s', owner=%s", pid, command, owner)
         return _exec_command(
             self.session,
             pid,

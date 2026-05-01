@@ -10,13 +10,13 @@ THREAD SAFETY FIX (v2):
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 import paramiko
 
@@ -56,19 +56,12 @@ def _safe_close_client(client: paramiko.SSHClient | None) -> None:
     """
     if client is None:
         return
-    try:
+    with contextlib.suppress(Exception):
         transport = client.get_transport()
         if transport is not None:
-            try:
-                transport.close()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
+            transport.close()
+    with contextlib.suppress(Exception):
         client.close()
-    except Exception:
-        pass
 
 
 def _count_threads() -> int:
@@ -90,8 +83,7 @@ class SSHConnectionPool:
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
         logger.info(
-            "SSH connection pool initialized "
-            "(idle_timeout=%ds, max_sessions=%d, threads=%d)",
+            "SSH connection pool initialized (idle_timeout=%ds, max_sessions=%d, threads=%d)",
             idle_timeout,
             MAX_SESSIONS,
             _count_threads(),
@@ -158,7 +150,7 @@ class SSHConnectionPool:
 
         # Create new SSH connection
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507
 
         connect_kwargs: dict = {
             "hostname": host,
@@ -185,13 +177,9 @@ class SSHConnectionPool:
                 except (paramiko.SSHException, ValueError):
                     continue
             if private_key is None:
-                raise ValueError(
-                    "Unable to parse SSH private key. Supported: RSA, Ed25519, ECDSA."
-                )
+                raise ValueError("Unable to parse SSH private key. Supported: RSA, Ed25519, ECDSA.")
             connect_kwargs["pkey"] = private_key
-            logger.info(
-                "Connecting to %s using key string (%s)", key, private_key.get_name()
-            )
+            logger.info("Connecting to %s using key string (%s)", key, private_key.get_name())
         else:
             raise ValueError("One of password, key_path, or key_string must be provided")
 
@@ -199,9 +187,7 @@ class SSHConnectionPool:
             client.connect(**connect_kwargs)
         except Exception:
             _safe_close_client(client)
-            logger.error(
-                "SSH connection failed to %s (threads=%d)", key, _count_threads()
-            )
+            logger.error("SSH connection failed to %s (threads=%d)", key, _count_threads())
             raise
 
         session_id = str(uuid.uuid4())[:8]
@@ -288,9 +274,7 @@ class SSHConnectionPool:
 
     def _cleanup_idle_unsafe(self) -> None:
         """Internal: cleanup without lock (caller must hold lock)."""
-        idle_keys = [
-            key for key, session in self._sessions.items() if session.is_idle()
-        ]
+        idle_keys = [key for key, session in self._sessions.items() if session.is_idle()]
         for key in idle_keys:
             session = self._sessions[key]
             _safe_close_client(session.client)
@@ -306,7 +290,7 @@ class SSHConnectionPool:
     def shutdown(self) -> None:
         """Close all connections and stop cleanup thread."""
         with self._lock:
-            for key, session in self._sessions.items():
+            for _key, session in self._sessions.items():
                 _safe_close_client(session.client)
             self._sessions.clear()
         logger.info("Pool shutdown complete (threads=%d)", _count_threads())

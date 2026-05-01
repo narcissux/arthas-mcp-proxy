@@ -6,14 +6,10 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from arthas_mcp_proxy.arthas_client import (
-    ArthasClient,
-    _ATTACH_LOCKS,
-    _ATTACH_LOCKS_MASTER,
     _PID_STATE,
     _PID_STATE_LOCK,
+    ArthasClient,
     _attach_agent,
     _detect_arthas_port,
     _ensure_agent,
@@ -102,24 +98,22 @@ class TestConcurrencyLocks:
             call_count["attach"] += 1
             return 3658
 
-        with patch("arthas_mcp_proxy.arthas_client._attach_agent", side_effect=fake_attach):
-            with patch(
-                "arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=None
-            ):
-                # Pre-populate cache
-                with _PID_STATE_LOCK:
-                    _PID_STATE[1234] = {"port": 3660, "owner": None}
+        with (
+            patch("arthas_mcp_proxy.arthas_client._attach_agent", side_effect=fake_attach),
+            patch("arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=None),
+        ):
+            # Pre-populate cache
+            with _PID_STATE_LOCK:
+                _PID_STATE[1234] = {"port": 3660, "owner": None}
 
-                port = _ensure_agent(mock_ssh_session, 1234, "/tmp/as.sh")
-                assert port == 3660
-                assert call_count["attach"] == 0
+            port = _ensure_agent(mock_ssh_session, 1234, "/tmp/as.sh")  # noqa: S108
+            assert port == 3660
+            assert call_count["attach"] == 0
 
     def test_cross_session_reuse(self, mock_ssh_session):
         """Level 2: existing agent detected via ss => reuse without attach."""
-        with patch(
-            "arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=3661
-        ):
-            port = _ensure_agent(mock_ssh_session, 5678, "/tmp/as.sh")
+        with patch("arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=3661):
+            port = _ensure_agent(mock_ssh_session, 5678, "/tmp/as.sh")  # noqa: S108
             assert port == 3661
             with _PID_STATE_LOCK:
                 assert _PID_STATE[5678]["port"] == 3661
@@ -152,9 +146,7 @@ class TestArthasClient:
         """list_java_processes should parse jps output correctly."""
         mock_stdout = MagicMock()
         mock_stdout.read.return_value = (
-            b"1234 app.jar --server\n"
-            b"5678 arthas-client.jar\n"
-            b"9999 jps -l -m\n"
+            b"1234 app.jar --server\n5678 arthas-client.jar\n9999 jps -l -m\n"
         )
         mock_stdout.channel.recv_exit_status.return_value = 0
         mock_stderr = MagicMock()
@@ -208,7 +200,7 @@ class TestLogTagsPresent:
     def test_all_tags_present(self):
         import inspect
 
-        from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh, _get_sudo_user
+        from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh
 
         src = ""
         for func in (

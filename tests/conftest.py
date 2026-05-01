@@ -33,7 +33,12 @@ def mock_ssh_session() -> MagicMock:
 @pytest.fixture(autouse=True)
 def clear_pid_state():
     """Clear global PID state before each test."""
-    from arthas_mcp_proxy.arthas_client import _PID_STATE, _PID_STATE_LOCK, _ATTACH_LOCKS, _ATTACH_LOCKS_MASTER
+    from arthas_mcp_proxy.arthas_client import (
+        _ATTACH_LOCKS,
+        _ATTACH_LOCKS_MASTER,
+        _PID_STATE,
+        _PID_STATE_LOCK,
+    )
 
     with _PID_STATE_LOCK:
         _PID_STATE.clear()

@@ -9,8 +9,9 @@ Provides:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHConnectionPool, SSHSession
@@ -83,10 +84,7 @@ def require_session(
                     )
 
             if not session:
-                return (
-                    "Error: Session not found or expired. "
-                    "Please reconnect using connect_ssh."
-                )
+                return "Error: Session not found or expired. Please reconnect using connect_ssh."
 
             # Replace session_id with resolved session
             kwargs["session"] = session
