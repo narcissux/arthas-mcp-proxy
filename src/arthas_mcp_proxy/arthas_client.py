@@ -36,12 +36,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Per-PID state: pid -> {"port": int, "owner": Optional[str]}
-_PID_STATE: dict[int, dict] = {}
+_PID_STATE: dict[int, dict[str, int | str | None]] = {}
 _PID_STATE_LOCK = threading.Lock()
 
 # Per-PID attach locks: ensures only one thread attaches to a given PID
 _ATTACH_LOCKS: dict[int, threading.Lock] = {}
 _ATTACH_LOCKS_MASTER = threading.Lock()
+
+# Module-level jar cache to avoid re-finding arthas-client.jar
+_jar_cache: dict[str, str] = {}
 
 
 def _get_attach_lock(pid: int) -> threading.Lock:
@@ -339,7 +342,7 @@ def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
     # Level 1: Cache hit
     with _PID_STATE_LOCK:
         if pid in _PID_STATE:
-            cached_port = _PID_STATE[pid]["port"]
+            cached_port = int(str(_PID_STATE[pid]["port"]))
             logger.debug("[ENSURE] Cache hit PID %d -> port %d", pid, cached_port)
             return cached_port
 
@@ -362,7 +365,7 @@ def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
         # Double-check after lock acquisition
         with _PID_STATE_LOCK:
             if pid in _PID_STATE:
-                port = _PID_STATE[pid]["port"]
+                port = int(str(_PID_STATE[pid]["port"]))
                 logger.info("[ENSURE] Another thread attached PID %d -> port %d", pid, port)
                 return port
 
@@ -394,12 +397,10 @@ def _exec_command(
     port = _ensure_agent(session, pid, arthas_path, owner)
 
     cache_key = f"{id(session)}_{owner}"
-    if not hasattr(_exec_command, "_jar_cache"):
-        _exec_command._jar_cache: dict[str, str] = {}
-    jar_path = _exec_command._jar_cache.get(cache_key)
+    jar_path = _jar_cache.get(cache_key)
     if jar_path is None:
         jar_path = _find_arthas_client_jar(session, arthas_path, owner)
-        _exec_command._jar_cache[cache_key] = jar_path
+        _jar_cache[cache_key] = jar_path
         logger.info("[CLIENT-JAR] Cached for session %s: %s", cache_key, jar_path)
 
     java_home = _get_java_home(session, owner)
@@ -599,7 +600,7 @@ class ArthasClient:
         port: int | None = None
         with _PID_STATE_LOCK:
             if pid in _PID_STATE:
-                port = _PID_STATE[pid]["port"]
+                port = int(str(_PID_STATE[pid]["port"]))
 
         if port is None:
             port = _detect_arthas_port(self.session, pid)

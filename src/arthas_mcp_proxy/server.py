@@ -47,7 +47,7 @@ _pool: SSHConnectionPool | None = None
 _pool_lock = threading.Lock()
 
 # Session credential cache (for fallback reconnection)
-_session_store: dict[str, dict] = {}
+_session_store: dict[str, dict[str, str | int]] = {}
 _store_lock = threading.Lock()
 
 
@@ -71,7 +71,7 @@ def _store_session(session_id: str, host: str, port: int, username: str) -> None
         }
 
 
-def _get_session_credentials(session_id: str) -> dict | None:
+def _get_session_credentials(session_id: str) -> dict[str, str | int] | None:
     with _store_lock:
         return _session_store.get(session_id)
 
@@ -80,7 +80,7 @@ def _get_session_credentials(session_id: str) -> dict | None:
 set_fallback_credential_getter(_get_session_credentials)
 
 
-def _coerce_params(kwargs: dict) -> dict:
+def _coerce_params(kwargs: dict[str, object]) -> dict[str, object]:
     """Coerce parameter types to handle clients that send strings instead of ints."""
     coerced = dict(kwargs)
     int_fields = ["port", "pid", "top_n", "times", "timeout"]
@@ -88,10 +88,12 @@ def _coerce_params(kwargs: dict) -> dict:
 
     for field in int_fields:
         if field in coerced and coerced[field] is not None:
-            try:
-                coerced[field] = int(coerced[field])
-            except (ValueError, TypeError):
-                logger.warning("Cannot coerce %s=%s to int", field, coerced[field])
+            val = coerced[field]
+            if isinstance(val, (int, str, float)):
+                try:
+                    coerced[field] = int(val)
+                except (ValueError, TypeError):
+                    logger.warning("Cannot coerce %s=%s to int", field, val)
 
     for field in bool_fields:
         if field in coerced and coerced[field] is not None:
@@ -102,7 +104,7 @@ def _coerce_params(kwargs: dict) -> dict:
     return coerced
 
 
-def _dump_params(tool_name: str, kwargs: dict) -> None:
+def _dump_params(tool_name: str, kwargs: dict[str, object]) -> None:
     """Log incoming parameters for debugging."""
     safe = {
         k: f"{v[:20]}..." if isinstance(v, str) and len(v) > 50 else v for k, v in kwargs.items()
@@ -152,7 +154,9 @@ def list_java_processes(session_id: str) -> str:
     if not session:
         creds = _get_session_credentials(session_id)
         if creds:
-            session = pool.get_session_by_host(creds["host"], creds["port"], creds["username"])
+            session = pool.get_session_by_host(
+                str(creds["host"]), int(creds["port"]), str(creds["username"])
+            )
         if not session:
             return "Error: Session not found or expired. Please reconnect using connect_ssh."
 

@@ -11,20 +11,22 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHConnectionPool, SSHSession
 
 logger = logging.getLogger(__name__)
 
-F = TypeVar("F", bound=Callable)
+F = TypeVar("F", bound=Callable[..., Any])
 
 # Fallback credential store callback - set by server.py at import time
-_fallback_credential_getter: Callable[[str], dict | None] | None = None
+_fallback_credential_getter: Callable[[str], dict[str, Any] | None] | None = None
 
 
-def set_fallback_credential_getter(getter: Callable[[str], dict | None] | None) -> None:
+def set_fallback_credential_getter(
+    getter: Callable[[str], dict[str, Any] | None] | None,
+) -> None:
     """Register a callback to resolve session_id -> credentials for fallback.
 
     Called by server.py during startup to avoid circular imports.
@@ -68,9 +70,9 @@ def require_session(
 
     def decorator(func: F) -> F:
         @wraps(func)
-        def wrapper(*args, **kwargs) -> str:
+        def wrapper(*args: object, **kwargs: object) -> str:
             session_id = kwargs.get("session_id")
-            if not session_id:
+            if not session_id or not isinstance(session_id, str):
                 return "Error: session_id is required"
 
             pool = pool_getter()
@@ -90,7 +92,8 @@ def require_session(
             kwargs["session"] = session
             del kwargs["session_id"]
 
-            return func(*args, **kwargs)
+            result: str = func(*args, **kwargs)
+            return result
 
         return wrapper  # type: ignore[return-value]
 

@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 import paramiko
 
@@ -152,7 +153,7 @@ class SSHConnectionPool:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507
 
-        connect_kwargs: dict = {
+        connect_kwargs: dict[str, Any] = {
             "hostname": host,
             "port": port,
             "username": username,
