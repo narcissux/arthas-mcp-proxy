@@ -42,6 +42,7 @@ RUN curl -fsSL -o /tmp/arthas-bin.zip \
     'https://arthas.aliyun.com/download/latest_version?mirror=aliyun' && \
     mkdir -p /tmp/arthas-all && \
     unzip -q -d /tmp/arthas-all /tmp/arthas-bin.zip && \
+    chown -R testuser:testuser /tmp/arthas-all && \
     rm /tmp/arthas-bin.zip
 
 COPY entrypoint.sh /entrypoint.sh
