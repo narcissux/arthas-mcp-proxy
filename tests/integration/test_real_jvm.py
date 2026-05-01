@@ -66,14 +66,32 @@ class TestSSHConnection:
 class TestArthasInstall:
     """Verify Arthas installation on target server."""
 
-    def test_install_arthas(self, arthas_client: "ArthasClient") -> None:
+    @staticmethod
+    def _clean_arthas_residuals(ssh_session: "SSHSession") -> None:
+        """Remove Arthas files left by previous runs for a clean test."""
+        paths = [
+            "/tmp/arthas-bin.zip",
+            "/tmp/arthas-install",
+            "~/.arthas",
+        ]
+        for p in paths:
+            ssh_session.client.exec_command(f"rm -rf {p}")
+
+    def test_install_arthas(self, arthas_client: "ArthasClient", ssh_session: "SSHSession") -> None:
+        self._clean_arthas_residuals(ssh_session)
         result = arthas_client.install_arthas(install_type="online")
         logger.info("install_arthas result: %s", result)
         assert "installed" in result.lower() or "already" in result.lower(), result
 
     def test_offline_install_skipped_when_no_bundle(
-        self, arthas_client: "ArthasClient",
+        self, arthas_client: "ArthasClient", ssh_session: "SSHSession",
     ) -> None:
+        """Offline install fails when no arthas-bin.zip on MCP server AND target.
+
+        Residual files from previous runs (e.g. /tmp/arthas-bin.zip pushed by
+        earlier tests) are cleaned before asserting the error.
+        """
+        self._clean_arthas_residuals(ssh_session)
         with pytest.raises(RuntimeError, match="arthas-bin.zip"):
             arthas_client.install_arthas(install_type="offline")
 
