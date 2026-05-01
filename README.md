@@ -64,18 +64,20 @@ python -m arthas_mcp_proxy --transport sse --port 8000
 # Unit tests only (mocked, no external dependencies)
 pytest tests/ --ignore=tests/integration/
 
-# Integration tests (requires a real SSH target with Java)
+# Integration tests with auto-managed Docker target (recommended)
+pytest tests/integration/ -m integration -v --docker-target
+
+# Integration tests against a remote target (env vars required)
 export TEST_SSH_HOST=your-server
 export TEST_SSH_USER=your-username
 export TEST_SSH_PASSWORD=your-password
 pytest tests/integration/ -m integration -v
 
-# Self-contained integration tests via Docker
-export TEST_SSH_HOST=localhost
-export TEST_SSH_USER=testuser
-export TEST_SSH_PASSWORD=testpass
+# Manual two-step Docker target
 docker compose -f docker-compose.test.yml up --build -d
+export TEST_SSH_HOST=localhost TEST_SSH_USER=testuser TEST_SSH_PASSWORD=testpass
 pytest tests/integration/ -m integration -v
+docker compose -f docker-compose.test.yml down --volumes
 ```
 
 ### Code quality
