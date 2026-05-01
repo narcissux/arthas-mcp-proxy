@@ -20,10 +20,9 @@ RUN useradd -m -s /bin/bash testuser && \
     mkdir -p /home/testuser/.ssh /run/sshd && \
     chown -R testuser:testuser /home/testuser
 
-# Make Java available in SSH login shells for testuser
-RUN echo "export JAVA_HOME=/opt/java/openjdk" > /etc/profile.d/java.sh && \
-    echo "export PATH=/opt/java/openjdk/bin:$PATH" >> /etc/profile.d/java.sh && \
-    chmod +x /etc/profile.d/java.sh
+# Make Java tools available in PATH for all users (including non-interactive SSH)
+RUN for tool in java jps jstack jmap jstat jcmd jinfo jar javac keytool; do ln -s /opt/java/openjdk/bin/$tool /usr/local/bin/$tool; done
+
 
 # Configure SSH: allow password auth, no PAM
 RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
