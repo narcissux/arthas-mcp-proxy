@@ -1,0 +1,14 @@
+# Mark binary files so they don't appear in git diff
+packages/*.whl binary
+packages/*.zip binary
+
+# Mark generated files as linguist-generated to exclude from GitHub stats
+*.lock linguist-generated
+
+# Ensure consistent line endings
+*.py text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

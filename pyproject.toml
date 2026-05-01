@@ -1,0 +1,122 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arthas-mcp-proxy"
+version = "2.0.0"
+description = "MCP Server for JVM diagnostics via SSH + Arthas"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "narcissux", email = "narcissux@example.com" },
+]
+keywords = ["mcp", "arthas", "jvm", "diagnostic", "ssh"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "mcp>=1.6.0",
+    "paramiko>=3.4.0",
+    "starlette>=0.40.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "pytest-asyncio>=0.24.0",
+    "types-paramiko",
+]
+
+[project.scripts]
+arthas-mcp-proxy = "arthas_mcp_proxy.server:main"
+
+[project.urls]
+Homepage = "https://github.com/narcissux/arthas-mcp-proxy"
+Repository = "https://github.com/narcissux/arthas-mcp-proxy"
+Issues = "https://github.com/narcissux/arthas-mcp-proxy/issues"
+
+# ─── Tool configurations ────────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (security)
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+]
+ignore = [
+    "S101",   # assert - allowed in tests
+    "S113",   # requests timeout - not applicable (paramiko)
+    "S311",   # random - not security-sensitive here
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S106"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_no_return = true
+ignore_missing_imports = true
+show_error_codes = true
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "unit: fast unit tests with mocked dependencies",
+    "integration: tests requiring real SSH/JVM",
+]
+
+[tool.coverage.run]
+source = ["src/arthas_mcp_proxy"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
