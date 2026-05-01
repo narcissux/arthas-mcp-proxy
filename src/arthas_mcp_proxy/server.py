@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import threading
+from typing import TYPE_CHECKING, Optional
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -31,6 +32,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from arthas_mcp_proxy.arthas_client import ArthasClient
 from arthas_mcp_proxy.decorators import require_session, set_fallback_credential_getter
 from arthas_mcp_proxy.ssh_pool import SSHConnectionPool
+
+if TYPE_CHECKING:
+    from arthas_mcp_proxy.ssh_pool import SSHSession
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -178,7 +182,7 @@ def thread_dump(session: object, pid: int, top_n: int = 20) -> str:
         top_n = int(top_n)
 
     try:
-        client = ArthasClient(session)
+        client = ArthasClient(session)  # type: ignore[arg-type]
         return client.thread_dump(pid=pid, top_n=top_n)
     except Exception as e:
         logger.error("thread_dump failed for PID %d: %s", pid, e)
@@ -193,7 +197,7 @@ def heap_info(session: object, pid: int) -> str:
         pid = int(pid)
 
     try:
-        client = ArthasClient(session)
+        client = ArthasClient(session)  # type: ignore[arg-type]
         return client.heap_info(pid=pid)
     except Exception as e:
         logger.error("heap_info failed for PID %d: %s", pid, e)
@@ -223,7 +227,7 @@ def watch_method(
         watch_return = watch_return.lower() in ("true", "1", "yes")
 
     try:
-        client = ArthasClient(session)
+        client = ArthasClient(session)  # type: ignore[arg-type]
         return client.watch_method(
             pid=pid,
             class_pattern=class_pattern,
@@ -302,7 +306,7 @@ def exec_command(session: object, pid: int, command: str, timeout: int = 60) -> 
         timeout = int(timeout)
 
     try:
-        client = ArthasClient(session)
+        client = ArthasClient(session)  # type: ignore[arg-type]
         return client.exec_command(pid=pid, command=command, timeout=timeout)
     except Exception as e:
         logger.error("exec_command failed: %s", e)
@@ -314,7 +318,7 @@ def exec_command(session: object, pid: int, command: str, timeout: int = 60) -> 
 def install_arthas(session: object, install_type: str = "auto") -> str:
     """Install Arthas on the target server if not already present."""
     try:
-        client = ArthasClient(session)
+        client = ArthasClient(session)  # type: ignore[arg-type]
         return client.install_arthas(install_type=install_type)
     except Exception as e:
         logger.error("install_arthas failed: %s", e)

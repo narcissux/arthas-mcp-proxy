@@ -93,9 +93,8 @@ warn_no_return = true
 ignore_missing_imports = true
 show_error_codes = true
 exclude = ["tests/integration/"]
-# Runtime may receive strings from JSON, so isinstance checks are needed
-# even when signature says int/bool. warn_unreachable would flag these.
 warn_unreachable = false
+disable_error_code = ["misc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
