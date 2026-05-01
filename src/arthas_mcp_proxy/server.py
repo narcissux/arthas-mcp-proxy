@@ -30,7 +30,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from arthas_mcp_proxy.arthas_client import ArthasClient
 from arthas_mcp_proxy.decorators import require_session, set_fallback_credential_getter
-from arthas_mcp_proxy.ssh_pool import SSHConnectionPool, SSHSession
+from arthas_mcp_proxy.ssh_pool import SSHConnectionPool
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -170,7 +170,7 @@ def list_java_processes(session_id: str) -> str:
 
 @mcp.tool()
 @require_session()
-def thread_dump(session: SSHSession, pid: int, top_n: int = 20) -> str:
+def thread_dump(session: object, pid: int, top_n: int = 20) -> str:
     """Get thread dump (top N threads by CPU usage) for a Java process."""
     if isinstance(pid, str):
         pid = int(pid)
@@ -187,7 +187,7 @@ def thread_dump(session: SSHSession, pid: int, top_n: int = 20) -> str:
 
 @mcp.tool()
 @require_session()
-def heap_info(session: SSHSession, pid: int) -> str:
+def heap_info(session: object, pid: int) -> str:
     """Get heap and memory dashboard for a Java process."""
     if isinstance(pid, str):
         pid = int(pid)
@@ -203,7 +203,7 @@ def heap_info(session: SSHSession, pid: int) -> str:
 @mcp.tool()
 @require_session()
 def watch_method(
-    session: SSHSession,
+    session: object,
     pid: int,
     class_pattern: str,
     method_pattern: str,
@@ -240,7 +240,7 @@ def watch_method(
 
 @mcp.tool()
 @require_session()
-def exec_command(session: SSHSession, pid: int, command: str, timeout: int = 60) -> str:
+def exec_command(session: object, pid: int, command: str, timeout: int = 60) -> str:
     """
     Execute an arbitrary Arthas command on the target JVM.
 
@@ -311,7 +311,7 @@ def exec_command(session: SSHSession, pid: int, command: str, timeout: int = 60)
 
 @mcp.tool()
 @require_session()
-def install_arthas(session: SSHSession, install_type: str = "auto") -> str:
+def install_arthas(session: object, install_type: str = "auto") -> str:
     """Install Arthas on the target server if not already present."""
     try:
         client = ArthasClient(session)
