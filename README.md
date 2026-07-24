@@ -1,5 +1,7 @@
 # Arthas MCP Proxy
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 MCP Server for JVM diagnostics via SSH + [Arthas](https://arthas.aliyun.com/).
 
 Provides 26+ diagnostic tools through the Model Context Protocol (MCP), enabling
