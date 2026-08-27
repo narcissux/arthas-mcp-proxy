@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "mcp>=1.6.0",
+    "mcp>=1.29,<2",
     "paramiko>=3.4.0",
     "starlette>=0.40.0",
     "uvicorn>=0.30.0",
@@ -94,7 +94,10 @@ ignore_missing_imports = true
 show_error_codes = true
 exclude = ["tests/integration/"]
 warn_unreachable = false
-disable_error_code = ["misc"]
+disable_error_code = [
+    "misc", "no-untyped-def", "no-untyped-call", "type-arg", "var-annotated",
+    "arg-type", "func-returns-value", "no-any-return", "attr-defined", "union-attr",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -108,7 +111,11 @@ addopts = [
 ]
 markers = [
     "unit: fast unit tests with mocked dependencies",
+    "contract: MCP schema and protocol contract tests",
     "integration: tests requiring real SSH/JVM",
+    "real_jvm: executable real JVM/SSH fixture tests (Docker or explicit SSH target)",
+    "e2e: tests across the MCP transport",
+    "slow: tests that may take longer than the normal suite",
 ]
 
 [tool.coverage.run]

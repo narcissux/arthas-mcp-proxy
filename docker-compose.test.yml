@@ -23,18 +23,40 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test-target
-    container_name: arthas-test-target
     ports:
       - "2222:22"
     environment:
       - SSH_USER=testuser
       - SSH_PASSWORD=testpass
     healthcheck:
-      test: ["CMD", "sshd", "-t"]
+      test: ["CMD-SHELL", "sshd -t && pgrep -u testuser -f '[m]ath-game' >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 5s
     privileged: true   # Required for Java attach (ptrace)
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+
+  # Same real fixture on a separate SSH port, for multi-target isolation tests.
+  test-target-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-target
+    ports:
+      - "2223:22"
+    environment:
+      - SSH_USER=testuser
+      - SSH_PASSWORD=testpass
+    healthcheck:
+      test: ["CMD-SHELL", "sshd -t && pgrep -u testuser -f '[m]ath-game' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    privileged: true
     cap_add:
       - SYS_PTRACE
     security_opt:

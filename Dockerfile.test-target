@@ -20,7 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create test user
 RUN useradd -m -s /bin/bash testuser && \
     mkdir -p /home/testuser/.ssh /run/sshd && \
-    chown -R testuser:testuser /home/testuser
+    chown -R testuser:testuser /home/testuser && \
+    echo 'testuser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/testuser && \
+    chmod 0440 /etc/sudoers.d/testuser
 
 # Make Java tools available in PATH for all users (including non-interactive SSH)
 RUN for tool in java jps jstack jmap jstat jcmd jinfo jar javac keytool; do ln -s /opt/java/openjdk/bin/$tool /usr/local/bin/$tool; done

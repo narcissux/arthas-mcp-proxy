@@ -17,10 +17,15 @@ Signature rewriting:
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+import uuid
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
+
+from arthas_mcp_proxy.models import ErrorCode, ErrorDetail, ResultMeta, ToolResult
+from arthas_mcp_proxy.result_adapter import to_mcp_result
 
 if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHConnectionPool, SSHSession
@@ -31,6 +36,20 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 # Fallback credential store callback - set by server.py at import time
 _fallback_credential_getter: Callable[[str], dict[str, Any] | None] | None = None
+SESSION_NOT_FOUND_MESSAGE = (
+    "Error: Session not found or expired. Please reconnect using connect_ssh."
+)
+
+
+def session_not_found_error_detail() -> ErrorDetail:
+    """Return the structured form of the legacy missing-session error."""
+    return ErrorDetail(
+        code=ErrorCode.SESSION_NOT_FOUND,
+        message=SESSION_NOT_FOUND_MESSAGE,
+        phase="resolve",
+        retryable=True,
+        suggestion="Reconnect using connect_ssh, then retry the diagnostic tool.",
+    )
 
 
 def set_fallback_credential_getter(
@@ -48,7 +67,8 @@ def require_session(
     *,
     pool_getter: Callable[[], SSHConnectionPool] | None = None,
     fallback: bool = True,
-) -> Callable[[F], F]:
+    structured_errors: bool = False,
+) -> Callable[[F], Callable[..., Any]]:
     """Decorator that resolves *session_id* -> *session* for MCP tools.
 
     The decorated function must accept ``session`` as its first parameter.
@@ -110,7 +130,18 @@ def require_session(
                     )
 
             if not session:
-                return "Error: Session not found or expired. Please reconnect using connect_ssh."
+                if not structured_errors:
+                    return SESSION_NOT_FOUND_MESSAGE
+                return json.dumps(
+                    to_mcp_result(
+                        ToolResult(
+                            status="error",
+                            summary=SESSION_NOT_FOUND_MESSAGE,
+                            error=session_not_found_error_detail(),
+                            meta=ResultMeta(request_id=f"req-{uuid.uuid4().hex}", duration_ms=0),
+                        )
+                    )
+                )
 
             kwargs["session"] = session
             result: str = func(*args, **kwargs)
@@ -118,6 +149,6 @@ def require_session(
 
         # Override the signature that FastMCP (and inspect) sees.
         wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
-        return wrapper  # type: ignore[return-value]
+        return cast("F", wrapper)
 
     return decorator

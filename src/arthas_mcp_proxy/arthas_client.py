@@ -28,31 +28,69 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHSession
 
+from .application_resolver import validate_process_identity
+from .arthas_http import ArthasHttpClient, ArthasHttpStreamingClient
+from .arthas_lifecycle import ArthasInstance, ArthasInstanceRegistry, ArthasOrigin
+from .errors import DomainError
+from .models import ErrorCode
+from .target_state import TargetIdentity
+
+_LIFECYCLE_REGISTRY = ArthasInstanceRegistry()
+
 logger = logging.getLogger(__name__)
 
 # Per-PID state: pid -> {"port": int, "owner": Optional[str]}
-_PID_STATE: dict[int, dict[str, int | str | None]] = {}
+_PID_STATE: dict[int | TargetIdentity, dict[str, int | str | None]] = {}
 _PID_STATE_LOCK = threading.Lock()
 
 # Per-PID attach locks: ensures only one thread attaches to a given PID
-_ATTACH_LOCKS: dict[int, threading.Lock] = {}
+_ATTACH_LOCKS: dict[int | TargetIdentity, threading.Lock] = {}
 _ATTACH_LOCKS_MASTER = threading.Lock()
 
 # Module-level jar cache to avoid re-finding arthas-client.jar
-_jar_cache: dict[str, str] = {}
+_jar_cache: dict[tuple[int | TargetIdentity, str | None], str] = {}
 
 
-def _get_attach_lock(pid: int) -> threading.Lock:
+def _get_attach_lock(pid: int | TargetIdentity) -> threading.Lock:
     """Get or create a per-PID attach lock."""
     with _ATTACH_LOCKS_MASTER:
         if pid not in _ATTACH_LOCKS:
             _ATTACH_LOCKS[pid] = threading.Lock()
         return _ATTACH_LOCKS[pid]
+
+
+def _state_key(
+    session: SSHSession, pid: int, start_time: str | None = None
+) -> int | TargetIdentity:
+    """Return a target-scoped key, including optional JVM start metadata."""
+    host = getattr(session, "host", None)
+    port = getattr(session, "port", None)
+    username = getattr(session, "username", None)
+    session_start_time = getattr(session, "start_time", None)
+    if start_time is None and isinstance(session_start_time, str):
+        start_time = session_start_time
+    if isinstance(host, str) and isinstance(port, int) and isinstance(username, str):
+        return TargetIdentity(str(host), int(port), str(username), pid, start_time)
+    return pid
+
+
+def _jar_cache_key(
+    session: SSHSession,
+    pid: int,
+    owner: str | None,
+    start_time: str | None = None,
+) -> tuple[int | TargetIdentity, str | None]:
+    """Build a stable cache key from remote target/process identity."""
+    return (_state_key(session, pid, start_time), owner)
 
 
 def _exec_ssh(
@@ -63,6 +101,8 @@ def _exec_ssh(
 ) -> tuple[str, str, int]:
     """Execute command over SSH, optionally with sudo -u <user>."""
     if sudo_user:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", sudo_user):
+            raise ValueError("Invalid sudo user")
         cmd_trim = command.strip()
         if not cmd_trim.startswith(("bash ", "sudo ")):
             command = f"sudo -u {sudo_user} env HOME=/tmp {command}"
@@ -257,20 +297,26 @@ def _detect_arthas_port(session: SSHSession, pid: int, owner: str | None = None)
     return None
 
 
-def _find_free_port(session: SSHSession) -> int:
+def _find_free_port(session: SSHSession, exclude: int | None = None) -> int:
     """Find first available port in range 3658-3665."""
     for port in range(3658, 3666):
         out, _, _ = _exec_ssh(
             session, f"ss -tln 2>/dev/null | grep -q ':{port} '; echo $?", timeout=5
         )
-        if out.strip() == "1":
+        if out.strip() == "1" and port != exclude:
             logger.debug("[PORT-FIND] Port %d is free", port)
             return port
     logger.error("[PORT-FIND] No free port in range 3658-3665")
     raise RuntimeError("No free port in range 3658-3665")
 
 
-def _attach_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | None = None) -> int:
+def _attach_agent(
+    session: SSHSession,
+    pid: int,
+    arthas_path: str,
+    owner: str | None = None,
+    start_time: str | None = None,
+) -> int:
     """Attach Arthas agent to target PID.
 
     THREAD SAFETY:
@@ -287,17 +333,20 @@ def _attach_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
     base_dir = arthas_path.rsplit("/", 1)[0] if "/" in arthas_path else "/tmp/arthas-all"  # noqa: S108
 
     port = _find_free_port(session)
-    logger.info("[ATTACH] Found free port %d for PID %d", port, pid)
+    http_port = _find_free_port(session, exclude=port)
+    logger.info("[ATTACH] Found free port %d (HTTP %d) for PID %d", port, http_port, pid)
 
     attach_cmd = (
         (
             f"sudo -u {owner} env HOME=/tmp java -jar {base_dir}/arthas-boot.jar "
-            f"--attach-only --telnet-port {port} --http-port -1 --arthas-home {base_dir} {pid}"
+            f"--attach-only --telnet-port {port} --http-port {http_port} "
+            f"--arthas-home {base_dir} {pid}"
         )
         if owner
         else (
             f"java -jar {base_dir}/arthas-boot.jar "
-            f"--attach-only --telnet-port {port} --http-port -1 --arthas-home {base_dir} {pid}"
+            f"--attach-only --telnet-port {port} --http-port {http_port} "
+            f"--arthas-home {base_dir} {pid}"
         )
     )
 
@@ -322,7 +371,11 @@ def _attach_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
                 elapsed,
             )
             with _PID_STATE_LOCK:
-                _PID_STATE[pid] = {"port": detected, "owner": owner}
+                _PID_STATE[_state_key(session, pid, start_time)] = {
+                    "port": detected,
+                    "http_port": http_port,
+                    "owner": owner,
+                }
             return detected
         logger.debug("[ATTACH] Poll %d/15: port not ready for PID %d", attempt + 1, pid)
 
@@ -331,7 +384,13 @@ def _attach_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
     raise RuntimeError(f"Arthas agent for PID {pid} started on port {port} but detection timed out")
 
 
-def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | None = None) -> int:
+def _ensure_agent(
+    session: SSHSession,
+    pid: int,
+    arthas_path: str,
+    owner: str | None = None,
+    start_time: str | None = None,
+) -> int:
     """Ensure Arthas agent is running for PID. Returns port number.
 
     Three-level lookup (fastest to slowest):
@@ -339,11 +398,38 @@ def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
         2. Cross-session agent reuse: detect via ss -tlnp (~100ms)
         3. Full attach: arthas-boot.jar (~2-3s, serialized per PID)
     """
+    state_key = _state_key(session, pid, start_time)
+    identity = state_key if isinstance(state_key, TargetIdentity) else None
+
+    def register_instance(port: int, origin: ArthasOrigin) -> None:
+        if identity is not None:
+            _LIFECYCLE_REGISTRY.register(
+                identity,
+                ArthasInstance(
+                    port=port,
+                    pid=pid,
+                    origin=origin,
+                    last_used_at=datetime.now(timezone.utc),
+                ),
+            )
+
     # Level 1: Cache hit
     with _PID_STATE_LOCK:
-        if pid in _PID_STATE:
-            cached_port = int(str(_PID_STATE[pid]["port"]))
+        if state_key in _PID_STATE:
+            cached_port = int(str(_PID_STATE[state_key]["port"]))
             logger.debug("[ENSURE] Cache hit PID %d -> port %d", pid, cached_port)
+            # A cache hit is not evidence that this proxy started Arthas.  Do
+            # not overwrite an ownership record established by the attach or
+            # existing-agent paths: doing so silently turns STARTED_BY_PROXY
+            # into UNKNOWN on the second request and makes authorized cleanup
+            # leak the remote agent.  Legacy/cache-only state remains
+            # deliberately non-stoppable (UNKNOWN).
+            if identity is not None:
+                known = _LIFECYCLE_REGISTRY.get(identity)
+                if known is None:
+                    register_instance(cached_port, ArthasOrigin.UNKNOWN)
+                else:
+                    _LIFECYCLE_REGISTRY.touch(identity, datetime.now(timezone.utc))
             return cached_port
 
     # Level 2: Detect existing agent (cross-session reuse)
@@ -351,12 +437,17 @@ def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
     if existing_port is not None:
         logger.info("[ENSURE] Reused existing agent PID %d -> port %d", pid, existing_port)
         with _PID_STATE_LOCK:
-            _PID_STATE[pid] = {"port": existing_port, "owner": owner}
+            _PID_STATE[state_key] = {
+                "port": existing_port,
+                "http_port": existing_port + 1,
+                "owner": owner,
+            }
+        register_instance(existing_port, ArthasOrigin.EXISTING)
         return existing_port
 
     # Level 3: Full attach (serialized per PID)
     logger.info("[ENSURE] Need attach for PID %d, acquiring lock...", pid)
-    attach_lock = _get_attach_lock(pid)
+    attach_lock = _get_attach_lock(state_key)
     if not attach_lock.acquire(timeout=60):
         logger.error("[ENSURE] Attach lock timeout for PID %d", pid)
         raise RuntimeError(f"Attach lock timeout for PID {pid}")
@@ -364,20 +455,33 @@ def _ensure_agent(session: SSHSession, pid: int, arthas_path: str, owner: str | 
     try:
         # Double-check after lock acquisition
         with _PID_STATE_LOCK:
-            if pid in _PID_STATE:
-                port = int(str(_PID_STATE[pid]["port"]))
+            if state_key in _PID_STATE:
+                port = int(str(_PID_STATE[state_key]["port"]))
                 logger.info("[ENSURE] Another thread attached PID %d -> port %d", pid, port)
+                if identity is not None:
+                    known = _LIFECYCLE_REGISTRY.get(identity)
+                    if known is None:
+                        register_instance(port, ArthasOrigin.UNKNOWN)
+                    else:
+                        _LIFECYCLE_REGISTRY.touch(identity, datetime.now(timezone.utc))
                 return port
 
         existing_port = _detect_arthas_port(session, pid, owner)
         if existing_port is not None:
             logger.info("[ENSURE] Agent appeared after lock PID %d -> port %d", pid, existing_port)
             with _PID_STATE_LOCK:
-                _PID_STATE[pid] = {"port": existing_port, "owner": owner}
+                _PID_STATE[state_key] = {
+                    "port": existing_port,
+                    "http_port": existing_port + 1,
+                    "owner": owner,
+                }
+            register_instance(existing_port, ArthasOrigin.EXISTING)
             return existing_port
 
         logger.info("[ENSURE] Attaching new agent for PID %d...", pid)
-        return _attach_agent(session, pid, arthas_path, owner)
+        port = _attach_agent(session, pid, arthas_path, owner, start_time)
+        register_instance(port, ArthasOrigin.STARTED_BY_PROXY)
+        return port
     finally:
         attach_lock.release()
         logger.debug("[ENSURE] Released attach lock for PID %d", pid)
@@ -390,18 +494,54 @@ def _exec_command(
     arthas_path: str,
     timeout: int = 60,
     owner: str | None = None,
+    start_time: str | None = None,
+    backend_state: dict[str, object] | None = None,
 ) -> str:
     """Execute Arthas command via client on detected port."""
     t0 = time.time()
 
-    port = _ensure_agent(session, pid, arthas_path, owner)
+    # A discovered start time is a strict runtime identity contract.  Validate
+    # immediately before attach/command execution to prevent PID reuse.
+    if start_time is not None:
+        stdout, _, rc = _exec_ssh(
+            session,
+            "jps -l -m 2>/dev/null || ps -ef | grep java | grep -v grep",
+            timeout=15,
+        )
+        if rc != 0:
+            raise DomainError(ErrorCode.JVM_EXITED, f"JVM process {pid} has exited")
+        validate_process_identity(stdout.splitlines(), pid, start_time)
 
-    cache_key = f"{id(session)}_{owner}"
+    port = _ensure_agent(session, pid, arthas_path, owner, start_time)
+
+    state_key = _state_key(session, pid, start_time)
+    with _PID_STATE_LOCK:
+        http_port = _PID_STATE.get(state_key, {}).get("http_port")
+    if http_port is not None:
+        try:
+            result = ArthasHttpClient(
+                lambda command, timeout=60: _exec_ssh(
+                    session, command, timeout=timeout, sudo_user=owner
+                ),
+                int(str(http_port)),
+                tls=os.environ.get("ARTHAS_HTTP_TLS", "").lower() in {"1", "true", "yes"},
+            ).execute(command, timeout)
+            if result.output.strip():
+                logger.info("[HTTP] command succeeded for PID %d", pid)
+                if backend_state is not None:
+                    backend_state.update(backend="arthas_http", degraded=False)
+                return _filter_output(result.output)
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            if backend_state is not None:
+                backend_state.update(backend="arthas_cli", degraded=True)
+            logger.info("[HTTP-FALLBACK] HTTP unavailable; executing CLI once: %s", exc)
+
+    cache_key = _jar_cache_key(session, pid, owner, start_time)
     jar_path = _jar_cache.get(cache_key)
     if jar_path is None:
         jar_path = _find_arthas_client_jar(session, arthas_path, owner)
         _jar_cache[cache_key] = jar_path
-        logger.info("[CLIENT-JAR] Cached for session %s: %s", cache_key, jar_path)
+        logger.info("[CLIENT-JAR] Cached for target %s: %s", cache_key, jar_path)
 
     java_home = _get_java_home(session, owner)
     env_prefix = f"JAVA_HOME={java_home} " if java_home else ""
@@ -417,12 +557,12 @@ def _exec_command(
     stdout, stderr, rc = _exec_ssh(session, exec_cmd, timeout=timeout + 10, sudo_user=owner)
 
     elapsed = time.time() - t0
-    result = _filter_output(stdout)
+    result_text = _filter_output(stdout)
 
-    if rc != 0 and not result.strip():
-        result = stderr.strip() or stdout.strip()
+    if rc != 0 and not result_text.strip():
+        result_text = stderr.strip() or stdout.strip()
 
-    out_len = len(result.strip())
+    out_len = len(result_text.strip())
     logger.info(
         "[CMD-EXEC] DONE PID=%d, rc=%d, output=%d chars, elapsed=%.1fs",
         pid,
@@ -439,7 +579,7 @@ def _exec_command(
             command,
         )
 
-    return result
+    return result_text
 
 
 def _filter_output(output: str) -> str:
@@ -487,9 +627,17 @@ def _parse_pid_line(line: str) -> tuple[int, str] | None:
 class ArthasClient:
     """High-level Arthas diagnostic client with thread-safe multi-PID support."""
 
-    def __init__(self, session: SSHSession) -> None:
+    def __init__(self, session: SSHSession, start_time: str | None = None) -> None:
         self.session = session
+        session_start_time = getattr(session, "start_time", None)
+        self.start_time = (
+            start_time
+            if start_time is not None
+            else (session_start_time if isinstance(session_start_time, str) else None)
+        )
         self._arthas_path: str | None = None
+        self.last_backend: str = "arthas_cli"
+        self.last_backend_degraded: bool = False
         self._owner_cache: dict[int, str | None] = {}
         self._client_lock = threading.Lock()
 
@@ -508,6 +656,13 @@ class ArthasClient:
         owner = _get_sudo_user(self.session, pid)
         self._owner_cache[pid] = owner
         return owner
+
+    def _validate_identity(self, pid: int) -> None:
+        """Re-check a resolved JVM immediately before executing diagnostics."""
+        if self.start_time is None:
+            return
+        output = self.list_java_processes()
+        validate_process_identity(output.splitlines(), pid, self.start_time)
 
     def list_java_processes(self) -> str:
         stdout, _, rc = _exec_ssh(
@@ -541,6 +696,7 @@ class ArthasClient:
             arthas_path=self._get_arthas_path(owner),
             timeout=30,
             owner=owner,
+            start_time=self.start_time,
         )
 
     def heap_info(self, pid: int) -> str:
@@ -553,6 +709,7 @@ class ArthasClient:
             arthas_path=self._get_arthas_path(owner),
             timeout=30,
             owner=owner,
+            start_time=self.start_time,
         )
 
     def watch_method(
@@ -582,11 +739,24 @@ class ArthasClient:
             arthas_path=self._get_arthas_path(owner),
             timeout=30,
             owner=owner,
+            start_time=self.start_time,
         )
 
-    def exec_command(self, pid: int, command: str, timeout: int = 60) -> str:
+    def trace_method(
+        self,
+        pid: int,
+        class_pattern: str,
+        method_pattern: str,
+        condition: str | None = None,
+        times: int = 5,
+        timeout: int = 60,
+    ) -> str:
+        """Run Arthas trace, deliberately distinct from watch."""
+        command = f"trace {class_pattern} {method_pattern}"
+        if condition:
+            command += f" '{condition}'"
+        command += f" -n {times}"
         owner = self._resolve_owner(pid)
-        logger.info("[API] exec_command pid=%d, cmd='%.40s', owner=%s", pid, command, owner)
         return _exec_command(
             self.session,
             pid,
@@ -594,12 +764,102 @@ class ArthasClient:
             arthas_path=self._get_arthas_path(owner),
             timeout=timeout,
             owner=owner,
+            start_time=self.start_time,
+        )
+
+    def exec_command(self, pid: int, command: str, timeout: int = 60) -> str:
+        owner = self._resolve_owner(pid)
+        logger.info("[API] exec_command pid=%d, cmd='%.40s', owner=%s", pid, command, owner)
+        state: dict[str, object] = {"backend": "arthas_cli", "degraded": False}
+        result = _exec_command(
+            self.session,
+            pid,
+            command,
+            arthas_path=self._get_arthas_path(owner),
+            timeout=timeout,
+            owner=owner,
+            start_time=self.start_time,
+            backend_state=state,
+        )
+        self.last_backend = str(state["backend"])
+        self.last_backend_degraded = bool(state["degraded"])
+        return result
+
+    def execute_command(self, pid: int, command: str, timeout: int = 60) -> str:
+        """Execute a rendered Arthas command for typed diagnostic tools."""
+        return self.exec_command(pid, command, timeout)
+
+    def execute_streaming_command(
+        self,
+        pid: int,
+        command: str,
+        emit: Callable[[str], None],
+        cancel: threading.Event,
+        timeout: int = 60,
+    ) -> str:
+        """Execute a long command through Arthas HTTP long-polling."""
+        owner = self._resolve_owner(pid)
+        port = _ensure_agent(
+            self.session, pid, self._get_arthas_path(owner), owner, self.start_time
+        )
+        state_key = _state_key(self.session, pid, self.start_time)
+        with _PID_STATE_LOCK:
+            http_port = _PID_STATE.get(state_key, {}).get("http_port", port + 1)
+        client = ArthasHttpStreamingClient(
+            lambda command, timeout=60: _exec_ssh(
+                self.session, command, timeout=timeout, sudo_user=owner
+            ),
+            int(str(http_port)),
+            tls=os.environ.get("ARTHAS_HTTP_TLS", "").lower() in {"1", "true", "yes"},
+        )
+        return client.execute_stream(command, emit, cancel, timeout=timeout)
+
+    def cleanup_expired(
+        self,
+        pid: int,
+        now: datetime,
+        ttl_seconds: int,
+        *,
+        authorized: bool = False,
+    ) -> list[ArthasInstance]:
+        """Detach an expired agent through the normal remote stop path.
+
+        The registry remains authorization- and ownership-aware; this method
+        only supplies the real ArthasClient ``detach`` callback for this exact
+        target/process identity.  EXISTING and UNKNOWN instances are filtered
+        out by ``should_auto_stop`` and therefore never invoke ``detach``.
+        """
+        identity = _state_key(self.session, pid, self.start_time)
+        if not isinstance(identity, TargetIdentity):
+            return []
+
+        def detach_instance(instance: ArthasInstance) -> None:
+            self.detach(instance.pid)
+
+        return _LIFECYCLE_REGISTRY.cleanup_expired(
+            now,
+            ttl_seconds,
+            detach_instance,
+            authorized=authorized,
+            target_identity=identity,
         )
 
     def detach(self, pid: int) -> str:
+        # Detach is destructive: never stop an agent after the resolved PID has
+        # been replaced by another JVM.  Keep this check before cache/port lookup
+        # so a stale agent handle cannot cause an operation on the new process.
+        self._validate_identity(pid)
         port: int | None = None
+        state_key = _state_key(self.session, pid, self.start_time)
         with _PID_STATE_LOCK:
-            if pid in _PID_STATE:
+            cache_key: int | TargetIdentity | None = None
+            if state_key in _PID_STATE:
+                cache_key = state_key
+                port = int(str(_PID_STATE[state_key]["port"]))
+            elif pid in _PID_STATE and self.start_time is None:
+                # PID-only legacy state is safe only for legacy PID-only clients;
+                # identity-bound clients must never inherit a stale PID entry.
+                cache_key = pid
                 port = int(str(_PID_STATE[pid]["port"]))
 
         if port is None:
@@ -622,7 +882,7 @@ class ArthasClient:
             )
             stdout, _, _ = _exec_ssh(self.session, stop_cmd, timeout=10, sudo_user=owner)
             with _PID_STATE_LOCK:
-                _PID_STATE.pop(pid, None)
+                _PID_STATE.pop(cache_key if cache_key is not None else state_key, None)
             logger.info("[DETACH] Graceful detach PID %d port %d", pid, port)
             return _filter_output(stdout) or f"Arthas detached from PID {pid} (port {port})"
         except Exception as e:
@@ -633,7 +893,7 @@ class ArthasClient:
             )
             _exec_ssh(self.session, kill_cmd, timeout=5, sudo_user=owner)
             with _PID_STATE_LOCK:
-                _PID_STATE.pop(pid, None)
+                _PID_STATE.pop(cache_key if cache_key is not None else state_key, None)
             return f"Arthas force-detached from PID {pid}"
 
     def install_arthas(self, install_type: str = "auto") -> str:
@@ -660,7 +920,8 @@ class ArthasClient:
     def _install_online(self) -> str:
         logger.info("[INSTALL] Online mode: downloading from aliyun")
         cmd = (
-            "rm -rf /tmp/arthas-install && mkdir -p /tmp/arthas-install && "
+            "rm -rf /tmp/arthas-install /tmp/arthas-all && "
+            "mkdir -p /tmp/arthas-install /tmp/arthas-all && "
             "cd /tmp/arthas-install && "
             "(curl -L -o arthas-bin.zip -k "
             "'https://arthas.aliyun.com/download/latest_version?mirror=aliyun' "
@@ -669,10 +930,9 @@ class ArthasClient:
             "'https://arthas.aliyun.com/download/latest_version?mirror=aliyun' "
             "2>/dev/null) && "
             "test -f arthas-bin.zip && unzip -o -q arthas-bin.zip && "
-            "mkdir -p ~/.arthas && "
-            "(cp -rf /tmp/arthas-install/arthas/* ~/.arthas/ 2>/dev/null \
-            || cp -rf /tmp/arthas-install/* ~/.arthas/) && "
-            "chmod +x ~/.arthas/as.sh && echo INSTALLED"
+            "(cp -rf /tmp/arthas-install/arthas/* /tmp/arthas-all/ 2>/dev/null "
+            "|| cp -rf /tmp/arthas-install/* /tmp/arthas-all/) && "
+            "chmod +x /tmp/arthas-all/as.sh && echo INSTALLED"
         )
         stdout, stderr, rc = _exec_ssh(self.session, cmd, timeout=120)
         if rc != 0 or "INSTALLED" not in stdout:

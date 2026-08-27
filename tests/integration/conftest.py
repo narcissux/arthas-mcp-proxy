@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -49,6 +50,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Automatically start a Docker test target (SSH + Java) "
         "before running integration tests",
     )
+    parser.addoption(
+        "--docker-targets",
+        action="store_true",
+        default=False,
+        help="Start both local Docker SSH targets for multi-target tests",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +66,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
-        pytest.skip(
+        pytest.fail(
             f"Integration test requires env var {name}. "
             f"Set it before running: export {name}=<value>"
         )
@@ -77,17 +84,28 @@ def _docker_compose_cmd() -> list[str]:
     Docker Compose v2: ``docker compose`` (plugin, space)
     Docker Compose v1: ``docker-compose`` (standalone, hyphen)
     """
-    # Prefer v2 plugin
+    # Prefer v2 plugin.  The integration fixture may run on hosts where the
+    # invoking user cannot access /var/run/docker.sock, so use the explicitly
+    # supported sudo path when available.
     try:
         subprocess.run(
-            ["docker", "compose", "version"],
+            ["sudo", "docker", "compose", "version"],
             capture_output=True,
             timeout=5,
             check=True,
         )
-        return ["docker", "compose"]
+        return ["sudo", "docker", "compose"]
     except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
+        try:
+            subprocess.run(
+                ["docker", "compose", "version"],
+                capture_output=True,
+                timeout=5,
+                check=True,
+            )
+            return ["docker", "compose"]
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
     # Fall back to v1 standalone
     docker_compose = shutil.which("docker-compose")
     if docker_compose:
@@ -101,21 +119,34 @@ def _docker_compose_cmd() -> list[str]:
             return [docker_compose]
         except (subprocess.CalledProcessError, OSError):
             pass
-    pytest.skip("Neither 'docker compose' nor 'docker-compose' is available")
+    pytest.fail("Neither 'docker compose' nor 'docker-compose' is available")
 
 
 def _wait_for_ssh(host: str, port: int, timeout: int = 60) -> bool:
-    """Poll until SSH port is accepting connections."""
+    """Poll until the endpoint emits a real SSH protocol banner.
+
+    A published Docker port can accept TCP connections before sshd is ready;
+    merely connecting and closing caused intermittent Paramiko banner failures.
+    """
     import socket
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with socket.create_connection((host, port), timeout=2):
-                return True
+            with socket.create_connection((host, port), timeout=2) as sock:
+                sock.settimeout(2)
+                banner = sock.recv(256)
+                if banner.startswith(b"SSH-"):
+                    return True
         except OSError:
-            time.sleep(1)
+            pass
+        time.sleep(1)
     return False
+
+
+def _compose_project() -> str:
+    """Return an isolated project name for each integration fixture run."""
+    return f"arthas-mcp-proxy-it-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="session")
@@ -137,35 +168,36 @@ def docker_test_target(request: pytest.FixtureRequest) -> dict[str, str]:
         return
 
     compose_cmd = _docker_compose_cmd()
+    project_name = f"arthas-mcp-proxy-it-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+    def compose(*args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([*compose_cmd, "-p", project_name, *args], **kwargs)  # type: ignore[arg-type]
 
     compose_file = os.path.join(
         os.path.dirname(__file__), "..", "..", "docker-compose.test.yml"
     )
     if not os.path.isfile(compose_file):
-        pytest.skip(f"Docker compose file not found: {compose_file}")
+        pytest.fail(f"Docker compose file not found: {compose_file}")
 
     logger.info("Building test target container...")
     try:
-        subprocess.run(
-            [*compose_cmd, "-f", compose_file, "up", "--build", "-d"],
+        compose(
+            "-f", compose_file, "up", "--build", "-d",
             check=True,
             capture_output=True,
             text=True,
             timeout=300,
         )
     except subprocess.CalledProcessError as exc:
-        pytest.skip(f"Failed to start Docker test target: {exc.stderr}")
+        pytest.fail(f"Failed to start Docker test target: {exc.stderr}")
     except FileNotFoundError:
-        pytest.skip("docker compose command not found")
+        pytest.fail("docker compose command not found")
 
     # Wait for SSH
     logger.info("Waiting for SSH on localhost:2222 ...")
     if not _wait_for_ssh("localhost", 2222, timeout=60):
-        subprocess.run(
-            [*compose_cmd, "-f", compose_file, "down", "--volumes"],
-            capture_output=True,
-        )
-        pytest.skip("SSH port 2222 not ready after 60s")
+        compose("-f", compose_file, "down", "--volumes", capture_output=True)
+        pytest.fail("SSH port 2222 not ready after 60s")
 
     logger.info("Docker test target ready (localhost:2222)")
 
@@ -184,10 +216,40 @@ def docker_test_target(request: pytest.FixtureRequest) -> dict[str, str]:
 
     # Teardown
     logger.info("Tearing down Docker test target...")
-    subprocess.run(
-        [*compose_cmd, "-f", compose_file, "down", "--volumes"],
-        capture_output=True,
+    compose("-f", compose_file, "down", "--volumes", capture_output=True)
+
+
+@pytest.fixture(scope="session")
+def docker_test_targets(request: pytest.FixtureRequest) -> dict[str, dict[str, str]]:
+    """Start two local real SSH/JVM targets; unavailable infrastructure fails."""
+    if not request.config.getoption("--docker-targets"):
+        yield {}
+        return
+    compose_cmd = _docker_compose_cmd()
+    project_name = _compose_project()
+    compose_file = os.path.join(os.path.dirname(__file__), "..", "..", "docker-compose.test.yml")
+    compose = lambda *args, **kwargs: subprocess.run(
+        [*compose_cmd, "-p", project_name, *args], **kwargs
     )
+    try:
+        compose(
+            "-f", compose_file, "up", "--build", "-d", "--wait", "test-target", "test-target-b",
+            check=True, capture_output=True, text=True, timeout=300,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        pytest.fail(f"Failed to start multi-target Docker fixture: {exc}")
+    targets = {
+        "target-a": {"host": "localhost", "port": "2222", "username": "testuser", "password": "testpass"},
+        "target-b": {"host": "localhost", "port": "2223", "username": "testuser", "password": "testpass"},
+    }
+    for name, target in targets.items():
+        if not _wait_for_ssh(target["host"], int(target["port"]), timeout=60):
+            compose("-f", compose_file, "down", "--volumes", capture_output=True)
+            pytest.fail(f"Docker SSH endpoint {name} was not ready")
+    try:
+        yield targets
+    finally:
+        compose("-f", compose_file, "down", "--volumes", capture_output=True)
 
 
 # ---------------------------------------------------------------------------
@@ -218,17 +280,26 @@ def ssh_session(
     """
     host = os.environ.get("TEST_SSH_HOST") or docker_test_target.get("host")
     if not host:
-        pytest.skip("No SSH target configured. Use --docker-target or set TEST_SSH_HOST")
+        pytest.fail("No SSH target configured. Use --docker-target or set TEST_SSH_HOST")
 
     port = int(os.environ.get("TEST_SSH_PORT", docker_test_target.get("port", "22")))
     username = os.environ.get("TEST_SSH_USER") or docker_test_target.get("user")
     password = os.environ.get("TEST_SSH_PASSWORD") or docker_test_target.get("password")
+    key_path = os.environ.get("TEST_SSH_KEY_PATH") or os.environ.get("TEST_SSH_KEY_FILE")
 
-    if not username or not password:
-        pytest.skip("SSH username/password not configured")
+    if not username or (not password and not key_path):
+        pytest.fail(
+            "SSH authentication is not configured. Set TEST_SSH_USER and either "
+            "TEST_SSH_PASSWORD or TEST_SSH_KEY_PATH (private-key path)."
+        )
 
     sid = ssh_pool.connect(
-        host=host, port=port, username=username, password=password, timeout=30
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        key_path=key_path,
+        timeout=30,
     )
     session = ssh_pool.get_session(sid)
     assert session is not None, f"Failed to establish SSH session to {host}"
@@ -271,6 +342,67 @@ def target_pid(ssh_session: "SSHSession") -> int:
 
 
 @pytest.fixture(scope="module")
+def pid_replacement_target(ssh_session: "SSHSession") -> dict[str, object]:
+    """Create real JVMs with the same namespace PID but different start times."""
+    import shlex
+
+    token = uuid.uuid4().hex
+    old_file = f"/tmp/pid-replacement-old-{token}"
+    new_file = f"/tmp/pid-replacement-new-{token}"
+
+    def start(path: str) -> int:
+        script = (
+            "java -jar /opt/math-game.jar >/dev/null 2>&1 & p=$!; "
+            "while kill -0 $p 2>/dev/null; do s=$(awk '{print $22}' /proc/$p/stat); "
+            f"printf '2 testuser %s math-game.jar\\n' \"$s\" > {shlex.quote(path)}; "
+            "sleep 0.1; done"
+        )
+        command = (
+            f"nohup sudo -n unshare -pf --mount-proc sh -c {shlex.quote(script)} "
+            ">/dev/null 2>&1 & echo $!"
+        )
+        _, stdout, stderr = ssh_session.client.exec_command(command)
+        outer_pid = stdout.read().decode().strip()
+        if not outer_pid.isdigit():
+            pytest.fail(f"Could not start real PID-namespace JVM: {stderr.read().decode().strip()}")
+        return int(outer_pid)
+
+    def read_line(path: str) -> str:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            _, stdout, _ = ssh_session.client.exec_command(f"test -s {path} && cat {path}")
+            line = stdout.read().decode().strip()
+            if line:
+                return line
+            time.sleep(0.5)
+        pytest.fail(f"Real JVM did not publish identity file {path}")
+
+    old_outer_pid = start(old_file)
+    old_line = read_line(old_file)
+    _, stdout, _ = ssh_session.client.exec_command(f"kill {old_outer_pid}; rm -f {old_file}")
+    stdout.channel.recv_exit_status()
+    new_outer_pid = start(new_file)
+    try:
+        new_line = read_line(new_file)
+        old_parts = old_line.split()
+        new_parts = new_line.split()
+        assert len(old_parts) >= 4 and len(new_parts) >= 4
+        assert old_parts[0] == new_parts[0] == "2"
+        return {
+            "old_pid": 2,
+            "old_start": old_parts[2],
+            "replacement_pid": 2,
+            "replacement_start": new_parts[2],
+            "replacement_line": new_line,
+        }
+    finally:
+        _, stdout, _ = ssh_session.client.exec_command(
+            f"kill {new_outer_pid} 2>/dev/null || true; rm -f {new_file}"
+        )
+        stdout.channel.recv_exit_status()
+
+
+@pytest.fixture(scope="module")
 def arthas_client(ssh_session: "SSHSession") -> "ArthasClient":
     """Return an ArthasClient configured for the SSH session."""
     from arthas_mcp_proxy.arthas_client import ArthasClient
@@ -289,22 +421,29 @@ def pytest_configure(config: pytest.Config) -> None:
         return
 
     # When --docker-target is used, env vars are auto-set by the fixture
-    if config.getoption("--docker-target"):
+    if config.getoption("--docker-target") or config.getoption("--docker-targets"):
         return
 
     missing: list[str] = []
-    for name in ("TEST_SSH_HOST", "TEST_SSH_USER", "TEST_SSH_PASSWORD"):
+    auth_configured = bool(os.environ.get("TEST_SSH_PASSWORD")) or bool(
+        os.environ.get("TEST_SSH_KEY_PATH") or os.environ.get("TEST_SSH_KEY_FILE")
+    )
+    for name in ("TEST_SSH_HOST", "TEST_SSH_USER"):
         if not os.environ.get(name):
             missing.append(name)
+    if not auth_configured:
+        missing.append("TEST_SSH_PASSWORD or TEST_SSH_KEY_PATH")
 
     if missing:
         pytest.exit(
-            "\nIntegration tests require SSH target credentials.\n"
-            f"Missing env vars: {', '.join(missing)}\n"
-            "\nSet them before running integration tests:\n"
-            "  export TEST_SSH_HOST=<your-server>\n"
-            "  export TEST_SSH_USER=<username>\n"
+            "\nIntegration tests require an explicitly configured SSH target and authentication.\n"
+            f"Missing configuration: {', '.join(missing)}\n"
+            "\nPassword authentication:\n"
+            "  export TEST_SSH_HOST=<your-server> TEST_SSH_USER=<username>\n"
             "  export TEST_SSH_PASSWORD=<password>\n"
+            "\nPrivate-key authentication (the path is passed to Paramiko; the key is never read by this check):\n"
+            "  export TEST_SSH_HOST=<your-server> TEST_SSH_USER=<username>\n"
+            "  export TEST_SSH_KEY_PATH=$HOME/.ssh/id_ed25519\n"
             "  export TEST_SSH_PORT=22          # optional\n"
             "\nOr use the built-in Docker test target:\n"
             "  pytest tests/integration/ -m integration -v --docker-target\n",

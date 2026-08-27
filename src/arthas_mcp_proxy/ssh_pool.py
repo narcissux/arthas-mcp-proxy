@@ -17,14 +17,20 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import paramiko
+
+from .errors import SSHPoolExhaustedError, SSHTransportLostError
 
 logger = logging.getLogger(__name__)
 
 IDLE_TIMEOUT = int(os.environ.get("SSH_IDLE_TIMEOUT", "300"))
 MAX_SESSIONS = int(os.environ.get("SSH_MAX_SESSIONS", "20"))
+KEEPALIVE_INTERVAL = int(os.environ.get("SSH_KEEPALIVE_INTERVAL", "30"))
 
 
 @dataclass
@@ -36,8 +42,13 @@ class SSHSession:
     port: int
     username: str
     client: paramiko.SSHClient
+    start_time: str | None = None
     last_used: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    lease_count: int = 0
+    disconnect_requested: bool = False
+    closed: bool = False
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def touch(self) -> None:
         """Update last used timestamp."""
@@ -46,6 +57,25 @@ class SSHSession:
     def is_idle(self) -> bool:
         """Check if session has been idle for longer than IDLE_TIMEOUT."""
         return (time.time() - self.last_used) > IDLE_TIMEOUT
+
+    @contextlib.contextmanager
+    def lease(self) -> Iterator[SSHSession]:
+        with self.state_lock:
+            if self.closed:
+                raise KeyError(f"Session not available: {self.session_id}")
+            self.lease_count += 1
+        try:
+            yield self
+        finally:
+            with self.state_lock:
+                self.lease_count -= 1
+                should_close = (
+                    self.disconnect_requested and self.lease_count == 0 and not self.closed
+                )
+                if should_close:
+                    self.closed = True
+            if should_close:
+                _safe_close_client(self.client)
 
 
 def _safe_close_client(client: paramiko.SSHClient | None) -> None:
@@ -81,6 +111,8 @@ class SSHConnectionPool:
         self.idle_timeout = idle_timeout
         self._sessions: dict[str, SSHSession] = {}
         self._lock = threading.Lock()
+        self._connect_locks: dict[str, threading.Lock] = {}
+        self._connect_lock_users: dict[str, int] = {}
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
         logger.info(
@@ -124,6 +156,37 @@ class SSHConnectionPool:
         key = self._make_key(host, port, username)
 
         with self._lock:
+            connect_lock = self._connect_locks.setdefault(key, threading.Lock())
+            self._connect_lock_users[key] = self._connect_lock_users.get(key, 0) + 1
+
+        try:
+            with connect_lock:
+                return self._connect_serialized(
+                    key, host, port, username, password, key_path, key_string, timeout
+                )
+        finally:
+            with self._lock:
+                users = self._connect_lock_users[key] - 1
+                if users == 0:
+                    self._connect_lock_users.pop(key)
+                    self._connect_locks.pop(key, None)
+                else:
+                    self._connect_lock_users[key] = users
+
+    def _connect_serialized(
+        self,
+        key: str,
+        host: str,
+        port: int,
+        username: str,
+        password: str | None,
+        key_path: str | None,
+        key_string: str | None,
+        timeout: int,
+    ) -> str:
+        """Connect one target at a time to avoid duplicate pooled sessions."""
+
+        with self._lock:
             if len(self._sessions) >= MAX_SESSIONS and key not in self._sessions:
                 logger.warning(
                     "Session pool full (%d/%d), cleaning idle sessions",
@@ -131,6 +194,10 @@ class SSHConnectionPool:
                     MAX_SESSIONS,
                 )
                 self._cleanup_idle_unsafe()
+                if len(self._sessions) >= MAX_SESSIONS:
+                    raise SSHPoolExhaustedError(
+                        f"SSH connection pool exhausted ({MAX_SESSIONS} sessions maximum)"
+                    )
 
             if key in self._sessions:
                 session = self._sessions[key]
@@ -186,6 +253,12 @@ class SSHConnectionPool:
 
         try:
             client.connect(**connect_kwargs)
+            # Keep the pooled transport alive across slow diagnostic operations.
+            # Without this, sshd/NAT idle reaping can leave Paramiko with a
+            # client whose transport has become None before the next command.
+            transport = client.get_transport()
+            if transport is not None:
+                transport.set_keepalive(KEEPALIVE_INTERVAL)
         except Exception:
             _safe_close_client(client)
             logger.error("SSH connection failed to %s (threads=%d)", key, _count_threads())
@@ -201,6 +274,11 @@ class SSHConnectionPool:
         )
 
         with self._lock:
+            if key not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
+                _safe_close_client(client)
+                raise SSHPoolExhaustedError(
+                    f"SSH connection pool exhausted ({MAX_SESSIONS} sessions maximum)"
+                )
             self._sessions[key] = session
 
         logger.info(
@@ -214,7 +292,7 @@ class SSHConnectionPool:
     def get_session(self, session_id: str) -> SSHSession | None:
         """Look up a session by its session_id."""
         with self._lock:
-            for session in self._sessions.values():
+            for key, session in self._sessions.items():
                 if session.session_id == session_id:
                     transport = session.client.get_transport()
                     if transport is not None and transport.is_active():
@@ -223,10 +301,25 @@ class SSHConnectionPool:
 
                     logger.warning("Session %s transport inactive", session_id)
                     _safe_close_client(session.client)
-                    del self._sessions[session.session_id]
+                    del self._sessions[key]
                     return None
         logger.warning("Session %s not found", session_id)
         return None
+
+    def get_session_or_raise(self, session_id: str) -> SSHSession:
+        """Resolve a live session, distinguishing a lost transport."""
+        with self._lock:
+            for key, session in list(self._sessions.items()):
+                if session.session_id != session_id:
+                    continue
+                transport = session.client.get_transport()
+                if transport is not None and transport.is_active():
+                    session.touch()
+                    return session
+                _safe_close_client(session.client)
+                del self._sessions[key]
+                raise SSHTransportLostError(f"SSH transport lost for session {session_id}")
+        raise KeyError(f"Session not found: {session_id}")
 
     def get_session_by_host(self, host: str, port: int, username: str) -> SSHSession | None:
         """Look up a session by host credentials."""
@@ -244,13 +337,48 @@ class SSHConnectionPool:
                 del self._sessions[key]
         return None
 
+    @contextlib.contextmanager
+    def lease(self, session_id: str) -> Iterator[SSHSession]:
+        # Acquire the session lease while holding the pool lock.  A lookup
+        # followed by ``session.lease()`` leaves a race window in which the
+        # cleanup thread can remove and close the session before the caller
+        # increments lease_count.
+        lease_cm = None
+        session = None
+        with self._lock:
+            for key, candidate in list(self._sessions.items()):
+                if candidate.session_id != session_id:
+                    continue
+                transport = candidate.client.get_transport()
+                if transport is None or not transport.is_active():
+                    _safe_close_client(candidate.client)
+                    del self._sessions[key]
+                    break
+                candidate.touch()
+                session = candidate
+                lease_cm = candidate.lease()
+                lease_cm.__enter__()
+                break
+        if session is None or lease_cm is None:
+            raise KeyError(f"Session not found: {session_id}")
+        try:
+            yield session
+        finally:
+            lease_cm.__exit__(None, None, None)
+
     def disconnect(self, session_id: str) -> bool:
         """Close and remove a specific session."""
         with self._lock:
             for key, session in list(self._sessions.items()):
                 if session.session_id == session_id:
-                    _safe_close_client(session.client)
                     del self._sessions[key]
+                    with session.state_lock:
+                        session.disconnect_requested = True
+                        should_close = session.lease_count == 0 and not session.closed
+                        if should_close:
+                            session.closed = True
+                    if should_close:
+                        _safe_close_client(session.client)
                     logger.info(
                         "Session %s disconnected (threads=%d)",
                         session_id,
@@ -275,7 +403,12 @@ class SSHConnectionPool:
 
     def _cleanup_idle_unsafe(self) -> None:
         """Internal: cleanup without lock (caller must hold lock)."""
-        idle_keys = [key for key, session in self._sessions.items() if session.is_idle()]
+        idle_keys = []
+        for key, session in self._sessions.items():
+            with session.state_lock:
+                leased = session.lease_count != 0
+            if not leased and session.is_idle():
+                idle_keys.append(key)
         for key in idle_keys:
             session = self._sessions[key]
             _safe_close_client(session.client)

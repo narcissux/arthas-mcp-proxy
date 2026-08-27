@@ -6,6 +6,8 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from arthas_mcp_proxy.arthas_client import (
     _PID_STATE,
     _PID_STATE_LOCK,
@@ -18,12 +20,29 @@ from arthas_mcp_proxy.arthas_client import (
     _find_free_port,
     _get_attach_lock,
     _get_sudo_user,
+    _jar_cache_key,
     _parse_pid_line,
+    _state_key,
 )
+from arthas_mcp_proxy.errors import DomainError
+from arthas_mcp_proxy.models import ErrorCode
+from arthas_mcp_proxy.target_state import TargetIdentity
 
 
 class TestConcurrencyLocks:
     """Verify thread-safety of the global PID state and attach locks."""
+
+    def test_attach_locks_are_target_scoped(self):
+        first = _get_attach_lock(TargetIdentity("host-a", 22, "root", 1234))
+        second = _get_attach_lock(TargetIdentity("host-b", 22, "root", 1234))
+        assert first is not second
+
+    def test_exec_ssh_rejects_shell_metacharacters_in_owner(self):
+        session = MagicMock()
+        with pytest.raises(ValueError, match="Invalid sudo user"):
+            from arthas_mcp_proxy.arthas_client import _exec_ssh
+
+            _exec_ssh(session, "id", sudo_user="appuser; id")
 
     def test_pid_state_lock_concurrent_rw(self, mock_ssh_session):
         """_PID_STATE survives 5 writers + 5 readers x 100 cycles each."""
@@ -104,7 +123,7 @@ class TestConcurrencyLocks:
         ):
             # Pre-populate cache
             with _PID_STATE_LOCK:
-                _PID_STATE[1234] = {"port": 3660, "owner": None}
+                _PID_STATE[_state_key(mock_ssh_session, 1234)] = {"port": 3660, "owner": None}
 
             port = _ensure_agent(mock_ssh_session, 1234, "/tmp/as.sh")  # noqa: S108
             assert port == 3660
@@ -116,7 +135,7 @@ class TestConcurrencyLocks:
             port = _ensure_agent(mock_ssh_session, 5678, "/tmp/as.sh")  # noqa: S108
             assert port == 3661
             with _PID_STATE_LOCK:
-                assert _PID_STATE[5678]["port"] == 3661
+                assert _PID_STATE[_state_key(mock_ssh_session, 5678)]["port"] == 3661
 
 
 class TestArthasClient:
@@ -163,6 +182,34 @@ class TestArthasClient:
         assert "arthas" not in result.lower() or "arthas:" in result
         assert "jps" not in result.lower()
 
+    def test_exec_command_validates_runtime_identity_before_attach(self, mock_ssh_session):
+        with (
+            patch("arthas_mcp_proxy.arthas_client._exec_ssh", return_value=("", "", 0)),
+            pytest.raises(DomainError) as exc_info,
+        ):
+            _exec_command(
+                mock_ssh_session,
+                42,
+                "jvm",
+                "/tmp/as.sh",  # noqa: S108
+                start_time="2026-08-01T10:00:00",
+            )
+        assert exc_info.value.code is ErrorCode.JVM_EXITED
+
+    def test_jar_cache_key_is_stable_and_target_process_scoped(self):
+        first = MagicMock(host="target-a", port=22, username="root")
+        second = MagicMock(host="target-a", port=22, username="root")
+
+        assert _jar_cache_key(first, 42, "root", "100.0") == _jar_cache_key(
+            second, 42, "root", "100.0"
+        )
+        assert _jar_cache_key(first, 42, "root", "100.0") != _jar_cache_key(
+            first, 42, "root", "200.0"
+        )
+        assert _jar_cache_key(first, 42, "root", "100.0") != _jar_cache_key(
+            first, 43, "root", "100.0"
+        )
+
     def test_filter_output_removes_noise(self):
         """_filter_output should strip Arthas noise lines and ANSI codes."""
         raw = (
@@ -183,6 +230,24 @@ class TestArthasClient:
         assert "wiki" not in filtered
         assert "Attach success" not in filtered
         assert "\x1b[" not in filtered
+
+    def test_online_install_populates_shared_arthas_path(self, mock_ssh_session):
+        """The install contract must match the path used by attach commands."""
+        stdout = MagicMock()
+        stdout.read.return_value = b"INSTALLED"
+        stdout.channel.recv_exit_status.return_value = 0
+        stderr = MagicMock()
+        stderr.read.return_value = b""
+        mock_ssh_session.client.exec_command.return_value = (None, stdout, stderr)
+
+        client = ArthasClient(mock_ssh_session)
+        with patch("arthas_mcp_proxy.arthas_client._find_arthas_path", side_effect=RuntimeError):
+            client.install_arthas(install_type="online")
+
+        command = mock_ssh_session.client.exec_command.call_args.args[0]
+        assert "/tmp/arthas-all" in command  # noqa: S108
+        assert "/tmp/arthas-all/arthas-boot.jar" not in command  # noqa: S108
+        assert "chmod +x /tmp/arthas-all/as.sh" in command  # noqa: S108
 
     def test_parse_pid_line_valid(self):
         assert _parse_pid_line("1234 app.jar") == (1234, "app.jar")

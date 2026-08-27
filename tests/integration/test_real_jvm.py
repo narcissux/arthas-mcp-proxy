@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -35,10 +36,43 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [pytest.mark.integration, pytest.mark.real_jvm]
 
 
 # ─── Tests ───────────────────────────────────────────────────────────────────
+
+
+class TestProxyOwnedLifecycleCleanup:
+    """Exercise proxy-owned attach and explicitly authorized cleanup."""
+
+    def test_proxy_owned_attach_then_cleanup(
+        self, arthas_client: "ArthasClient", ssh_session: "SSHSession", target_pid: int
+    ) -> None:
+        from arthas_mcp_proxy.arthas_client import (
+            _LIFECYCLE_REGISTRY, _detect_arthas_port, _ensure_agent, _find_arthas_path,
+        )
+        from arthas_mcp_proxy.arthas_lifecycle import ArthasOrigin
+        from arthas_mcp_proxy.target_state import TargetIdentity
+
+        owner = arthas_client._resolve_owner(target_pid)
+        if _detect_arthas_port(ssh_session, target_pid, owner) is not None:
+            pytest.skip("target already has Arthas; refusing to stop existing/unknown agent")
+        port = _ensure_agent(
+            ssh_session, target_pid, _find_arthas_path(ssh_session, owner), owner,
+            arthas_client.start_time,
+        )
+        identity = TargetIdentity(
+            str(ssh_session.host), int(ssh_session.port), str(ssh_session.username),
+            target_pid, arthas_client.start_time,
+        )
+        instance = _LIFECYCLE_REGISTRY.get(identity)
+        assert instance is not None and instance.port == port
+        assert instance.origin is ArthasOrigin.STARTED_BY_PROXY
+        assert arthas_client.cleanup_expired(
+            target_pid, datetime.now(timezone.utc) + timedelta(seconds=1), 0, authorized=True
+        ) == [instance]
+        assert _LIFECYCLE_REGISTRY.get(identity) is None
+        assert _detect_arthas_port(ssh_session, target_pid, owner) is None
 
 
 class TestSSHConnection:

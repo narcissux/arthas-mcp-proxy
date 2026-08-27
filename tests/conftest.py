@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 @pytest.fixture
@@ -31,7 +35,7 @@ def mock_ssh_session() -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
-def clear_pid_state():
+def clear_pid_state() -> Generator[None, None, None]:
     """Clear global PID state before each test."""
     from arthas_mcp_proxy.arthas_client import (
         _ATTACH_LOCKS,
