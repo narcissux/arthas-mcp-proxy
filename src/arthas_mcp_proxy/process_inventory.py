@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 from .errors import DomainError
 from .models import ErrorCode
+from .target_state import TargetIdentity
 
 Runner = Callable[[str], tuple[str, str, int]]
 
@@ -176,3 +178,27 @@ def collect_inventory_over_ssh(run: Runner) -> list[ProcessRecord]:
             jps_lines=jps_out.splitlines(),
         )
     return collect_inventory(proc_available=False, jps_available=False)
+
+
+class _SessionIdentity(Protocol):
+    host: str
+    port: int
+    username: str
+
+
+def process_record_to_dict(record: ProcessRecord, session: _SessionIdentity) -> dict[str, Any]:
+    """Map a ProcessRecord plus session identity into MCP process fields."""
+    return {
+        "pid": record.pid,
+        "command": record.command,
+        "owner": record.owner,
+        "start_time": record.start_time,
+        "boot_id": record.boot_id,
+        "handle": TargetIdentity(
+            host=str(session.host),
+            port=int(session.port),
+            username=str(session.username),
+            pid=record.pid,
+            start_time=record.start_time,
+        ).handle,
+    }

@@ -41,7 +41,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from arthas_mcp_proxy.application_resolver import find_java_application as resolve_java_application
-from arthas_mcp_proxy.arthas_client import ArthasClient
+from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh
 from arthas_mcp_proxy.command_catalog import COMMANDS, build_command
 from arthas_mcp_proxy.cookbook import COOKBOOK
 from arthas_mcp_proxy.decorators import require_session, set_fallback_credential_getter
@@ -54,6 +54,10 @@ from arthas_mcp_proxy.jobs import JobStatus
 from arthas_mcp_proxy.models import ErrorCode, ErrorDetail, ResultMeta, ToolResult
 from arthas_mcp_proxy.observation_policy import ObservationPolicy
 from arthas_mcp_proxy.output_limit import limit_output, paginate_output
+from arthas_mcp_proxy.process_inventory import (
+    collect_inventory_over_ssh,
+    process_record_to_dict,
+)
 from arthas_mcp_proxy.result_adapter import to_mcp_result
 from arthas_mcp_proxy.ssh_pool import get_connection_pool
 from arthas_mcp_proxy.target_state import TargetIdentity
@@ -556,8 +560,27 @@ def list_java_processes(session_id: str) -> str:
             )
 
     try:
-        client = ArthasClient(session)
-        return client.list_java_processes()
+        records = collect_inventory_over_ssh(lambda command: _exec_ssh(session, command))
+        processes = [process_record_to_dict(record, session) for record in records]
+        count = len(processes)
+        summary = (
+            "No Java processes found."
+            if count == 0
+            else f"Found {count} Java process{'es' if count != 1 else ''}."
+        )
+        return json.dumps(
+            to_mcp_result(
+                ToolResult(
+                    status="success",
+                    summary=summary,
+                    data={"processes": processes},
+                    meta=ResultMeta(request_id=f"req-{uuid.uuid4().hex}", duration_ms=0),
+                )
+            )
+        )
+    except DomainError as exc:
+        logger.error("list_java_processes failed: %s", exc)
+        return _structured_error(exc.code, exc.message, suggestion=exc.suggestion)
     except Exception as e:
         logger.error("list_java_processes failed: %s", e)
         return _structured_error(ErrorCode.INTERNAL_ERROR, f"Error listing Java processes: {e}")
