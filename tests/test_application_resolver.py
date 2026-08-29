@@ -170,12 +170,12 @@ def test_validate_process_identity_rejects_missing_runtime_start_time() -> None:
 
 
 @pytest.mark.contract
-def test_find_java_application_matches_process_record_last_token() -> None:
+def test_find_java_application_matches_process_record_jar_basename() -> None:
     records = [
         ProcessRecord(pid=1, command="java -jar Other.jar"),
         ProcessRecord(
             pid=4242,
-            command="java -jar OrderService.jar",
+            command="java -jar OrderService.jar --server.port=8080",
             owner="appuser",
             start_time="17000",
             boot_id="2f4c1b6a-9d3e-4a10-8c2b-77e0d1a2b3c4",
@@ -183,10 +183,11 @@ def test_find_java_application_matches_process_record_last_token() -> None:
     ]
     result = find_java_application(records, "OrderService.jar")
     assert result.pid == 4242
-    assert result.command == "java -jar OrderService.jar"
+    assert result.command == "java -jar OrderService.jar --server.port=8080"
     assert result.owner == "appuser"
     assert result.start_time == "17000"
     assert result.boot_id == "2f4c1b6a-9d3e-4a10-8c2b-77e0d1a2b3c4"
+    assert result.match_evidence == "jar_basename"
 
 
 @pytest.mark.contract
