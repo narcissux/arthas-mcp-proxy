@@ -610,6 +610,7 @@ def find_java_application(session_id: str, application_name: str) -> str:
         candidate = resolve_java_application(records, application_name)
         # Preserve the discovered identity for the caller's next Arthas operation.
         session.start_time = candidate.start_time
+        session.boot_id = candidate.boot_id
         return json.dumps(
             {
                 "pid": candidate.pid,

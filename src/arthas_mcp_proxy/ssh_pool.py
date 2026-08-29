@@ -43,6 +43,7 @@ class SSHSession:
     username: str
     client: paramiko.SSHClient
     start_time: str | None = None
+    boot_id: str | None = None
     last_used: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock)
     lease_count: int = 0

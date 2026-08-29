@@ -10,6 +10,11 @@ from .models import ResultMeta, ToolResult
 BackendName = Literal["ssh", "arthas_cli", "arthas_http", "arthas_ws"]
 
 
+def _identity_complete_from_client(client: Any) -> bool | None:
+    flag = getattr(client, "last_identity_complete", None)
+    return flag if isinstance(flag, bool) else None
+
+
 def execute_typed_command(
     client: Any,
     *,
@@ -36,6 +41,7 @@ def execute_typed_command(
                 duration_ms=int((time.perf_counter() - started) * 1000),
                 backend=backend_name,
                 degraded=bool(getattr(client, "last_backend_degraded", False)),
+                identity_complete=_identity_complete_from_client(client),
             ),
         )
     except ValueError as exc:
@@ -61,5 +67,6 @@ def execute_typed_command(
                 request_id=request_id,
                 duration_ms=int((time.perf_counter() - started) * 1000),
                 backend="arthas_cli",
+                identity_complete=_identity_complete_from_client(client),
             ),
         )

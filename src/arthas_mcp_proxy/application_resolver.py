@@ -90,43 +90,64 @@ def find_java_application(
     raise DomainError(ErrorCode.JVM_NOT_FOUND, f"Java application not found: {application_name}")
 
 
-def is_same_process(candidate: ApplicationCandidate, pid: int, start_time: str) -> bool:
+def is_same_process(
+    candidate: ApplicationCandidate,
+    pid: int,
+    start_time: str,
+    boot_id: str | None = None,
+) -> bool:
     if candidate.start_time is None:
         raise DomainError(ErrorCode.JVM_IDENTITY_CHANGED, "Process start time is unavailable")
-    return candidate.pid == pid and candidate.start_time == start_time
+    return (
+        candidate.pid == pid
+        and candidate.start_time == start_time
+        and (not boot_id or candidate.boot_id == boot_id)
+    )
+
+
+def _candidate_from_listing_item(
+    item: str | ProcessRecord, pid: int
+) -> ApplicationCandidate | None:
+    if isinstance(item, ProcessRecord):
+        return _candidate_from_record(item) if item.pid == pid else None
+    normalized = item.strip()
+    if normalized.startswith("PID ") and ":" in normalized:
+        normalized = normalized[4:].replace(":", " ", 1)
+    parts = normalized.split()
+    if not parts or not parts[0].isdigit() or int(parts[0]) != pid:
+        return None
+    if len(parts) >= 4:
+        return ApplicationCandidate(
+            pid=pid, owner=parts[1], start_time=parts[2], command=" ".join(parts[3:])
+        )
+    return ApplicationCandidate(pid=pid, command=" ".join(parts[1:]))
 
 
 def validate_process_identity(
-    lines: Iterable[str], pid: int, start_time: str
+    sources: Iterable[str | ProcessRecord],
+    pid: int,
+    start_time: str,
+    boot_id: str | None = None,
 ) -> ApplicationCandidate:
     """Validate a previously resolved JVM against a fresh process listing.
 
+    Accepts either legacy text lines or structured ProcessRecord inventory.
     A missing PID means the JVM exited.  A present PID with a different (or
-    unavailable) start time is treated as PID reuse/identity loss.  Callers
-    without a recorded start time deliberately do not call this function,
-    preserving the legacy PID-only behavior.
+    unavailable) start time, or a changed boot_id when one was recorded, is
+    treated as PID reuse/identity loss.  Callers without a recorded start time
+    deliberately do not call this function, preserving the legacy PID-only
+    behavior.
     """
     candidates: list[ApplicationCandidate] = []
-    for line in lines:
-        normalized = line.strip()
-        if normalized.startswith("PID ") and ":" in normalized:
-            normalized = normalized[4:].replace(":", " ", 1)
-        parts = normalized.split()
-        if not parts or not parts[0].isdigit() or int(parts[0]) != pid:
-            continue
-        if len(parts) >= 4:
-            candidates.append(
-                ApplicationCandidate(
-                    pid=pid, owner=parts[1], start_time=parts[2], command=" ".join(parts[3:])
-                )
-            )
-        else:
-            candidates.append(ApplicationCandidate(pid=pid, command=" ".join(parts[1:])))
+    for item in sources:
+        parsed = _candidate_from_listing_item(item, pid)
+        if parsed is not None:
+            candidates.append(parsed)
 
     if not candidates:
         raise DomainError(ErrorCode.JVM_EXITED, f"JVM process {pid} has exited")
     candidate = candidates[0]
-    if not is_same_process(candidate, pid, start_time):
+    if not is_same_process(candidate, pid, start_time, boot_id=boot_id):
         raise DomainError(
             ErrorCode.JVM_IDENTITY_CHANGED,
             f"JVM identity changed for PID {pid}",

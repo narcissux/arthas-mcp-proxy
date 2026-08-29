@@ -37,11 +37,10 @@ if TYPE_CHECKING:
 if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHSession
 
-from .application_resolver import validate_process_identity
+from .application_resolver import identity_complete, validate_process_identity
 from .arthas_http import ArthasHttpClient, ArthasHttpStreamingClient
 from .arthas_lifecycle import ArthasInstance, ArthasInstanceRegistry, ArthasOrigin
-from .errors import DomainError
-from .models import ErrorCode
+from .process_inventory import collect_inventory_over_ssh
 from .target_state import TargetIdentity
 
 _LIFECYCLE_REGISTRY = ArthasInstanceRegistry()
@@ -487,6 +486,23 @@ def _ensure_agent(
         logger.debug("[ENSURE] Released attach lock for PID %d", pid)
 
 
+def _check_process_identity(
+    session: SSHSession,
+    pid: int,
+    start_time: str | None,
+    boot_id: str | None = None,
+) -> bool:
+    """Re-check live inventory identity. Legacy clients without start_time skip.
+
+    Returns whether the recorded/live identity is complete (start_time + boot_id).
+    """
+    if start_time is None:
+        return False
+    records = collect_inventory_over_ssh(lambda command: _exec_ssh(session, command))
+    candidate = validate_process_identity(records, pid, start_time, boot_id=boot_id)
+    return identity_complete(candidate)
+
+
 def _exec_command(
     session: SSHSession,
     pid: int,
@@ -495,6 +511,7 @@ def _exec_command(
     timeout: int = 60,
     owner: str | None = None,
     start_time: str | None = None,
+    boot_id: str | None = None,
     backend_state: dict[str, object] | None = None,
 ) -> str:
     """Execute Arthas command via client on detected port."""
@@ -502,15 +519,10 @@ def _exec_command(
 
     # A discovered start time is a strict runtime identity contract.  Validate
     # immediately before attach/command execution to prevent PID reuse.
-    if start_time is not None:
-        stdout, _, rc = _exec_ssh(
-            session,
-            "jps -l -m 2>/dev/null || ps -ef | grep java | grep -v grep",
-            timeout=15,
-        )
-        if rc != 0:
-            raise DomainError(ErrorCode.JVM_EXITED, f"JVM process {pid} has exited")
-        validate_process_identity(stdout.splitlines(), pid, start_time)
+    # Legacy clients with no start_time skip the hard check.
+    identity_ok = _check_process_identity(session, pid, start_time, boot_id)
+    if backend_state is not None:
+        backend_state["identity_complete"] = identity_ok
 
     port = _ensure_agent(session, pid, arthas_path, owner, start_time)
 
@@ -627,7 +639,12 @@ def _parse_pid_line(line: str) -> tuple[int, str] | None:
 class ArthasClient:
     """High-level Arthas diagnostic client with thread-safe multi-PID support."""
 
-    def __init__(self, session: SSHSession, start_time: str | None = None) -> None:
+    def __init__(
+        self,
+        session: SSHSession,
+        start_time: str | None = None,
+        boot_id: str | None = None,
+    ) -> None:
         self.session = session
         session_start_time = getattr(session, "start_time", None)
         self.start_time = (
@@ -635,9 +652,16 @@ class ArthasClient:
             if start_time is not None
             else (session_start_time if isinstance(session_start_time, str) else None)
         )
+        session_boot_id = getattr(session, "boot_id", None)
+        self.boot_id = (
+            boot_id
+            if boot_id is not None
+            else (session_boot_id if isinstance(session_boot_id, str) else None)
+        )
         self._arthas_path: str | None = None
         self.last_backend: str = "arthas_cli"
         self.last_backend_degraded: bool = False
+        self.last_identity_complete: bool = False
         self._owner_cache: dict[int, str | None] = {}
         self._client_lock = threading.Lock()
 
@@ -659,10 +683,9 @@ class ArthasClient:
 
     def _validate_identity(self, pid: int) -> None:
         """Re-check a resolved JVM immediately before executing diagnostics."""
-        if self.start_time is None:
-            return
-        output = self.list_java_processes()
-        validate_process_identity(output.splitlines(), pid, self.start_time)
+        self.last_identity_complete = _check_process_identity(
+            self.session, pid, self.start_time, self.boot_id
+        )
 
     def list_java_processes(self) -> str:
         stdout, _, rc = _exec_ssh(
@@ -697,6 +720,7 @@ class ArthasClient:
             timeout=30,
             owner=owner,
             start_time=self.start_time,
+            boot_id=self.boot_id,
         )
 
     def heap_info(self, pid: int) -> str:
@@ -710,6 +734,7 @@ class ArthasClient:
             timeout=30,
             owner=owner,
             start_time=self.start_time,
+            boot_id=self.boot_id,
         )
 
     def watch_method(
@@ -740,6 +765,7 @@ class ArthasClient:
             timeout=30,
             owner=owner,
             start_time=self.start_time,
+            boot_id=self.boot_id,
         )
 
     def trace_method(
@@ -765,6 +791,7 @@ class ArthasClient:
             timeout=timeout,
             owner=owner,
             start_time=self.start_time,
+            boot_id=self.boot_id,
         )
 
     def exec_command(self, pid: int, command: str, timeout: int = 60) -> str:
@@ -779,10 +806,12 @@ class ArthasClient:
             timeout=timeout,
             owner=owner,
             start_time=self.start_time,
+            boot_id=self.boot_id,
             backend_state=state,
         )
         self.last_backend = str(state["backend"])
         self.last_backend_degraded = bool(state["degraded"])
+        self.last_identity_complete = bool(state.get("identity_complete", False))
         return result
 
     def execute_command(self, pid: int, command: str, timeout: int = 60) -> str:
@@ -799,6 +828,9 @@ class ArthasClient:
     ) -> str:
         """Execute a long command through Arthas HTTP long-polling."""
         owner = self._resolve_owner(pid)
+        self.last_identity_complete = _check_process_identity(
+            self.session, pid, self.start_time, self.boot_id
+        )
         port = _ensure_agent(
             self.session, pid, self._get_arthas_path(owner), owner, self.start_time
         )

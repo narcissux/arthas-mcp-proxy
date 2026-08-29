@@ -42,6 +42,7 @@ class ResultMeta(BaseModel):
     original_chars: int | None = None
     returned_chars: int | None = None
     next_cursor: str | None = None
+    identity_complete: bool | None = None
 
 
 class ErrorDetail(BaseModel):

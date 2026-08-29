@@ -16,6 +16,7 @@ def session() -> MagicMock:
     value.port = 22
     value.username = "app"
     value.start_time = "2026-08-02T10:00:00"
+    value.boot_id = "boot-old"
     return value
 
 
@@ -41,6 +42,7 @@ def test_all_execute_watch_trace_paths_inherit_session_identity(
     ):
         assert getattr(client, method)(*args, **kwargs) == "ok"
     assert execute.call_args.kwargs["start_time"] == session.start_time
+    assert execute.call_args.kwargs["boot_id"] == session.boot_id
 
 
 def test_detach_revalidates_identity_before_stopping_agent(session: MagicMock) -> None:

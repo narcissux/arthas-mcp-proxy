@@ -42,6 +42,38 @@ def test_typed_executor_maps_backend_failure() -> None:
 
 
 @pytest.mark.unit
+def test_typed_executor_copies_identity_complete_on_success() -> None:
+    client = MagicMock()
+    client.last_identity_complete = False
+
+    def _execute(**kwargs: object) -> str:
+        client.last_identity_complete = True
+        return "ok"
+
+    client.execute_command.side_effect = _execute
+    result = execute_typed_command(client, pid=123, command="heap_info", params={})
+    assert result.status == "success"
+    assert result.meta.identity_complete is True
+
+
+@pytest.mark.unit
+def test_typed_executor_copies_identity_complete_on_exception() -> None:
+    client = MagicMock()
+    client.last_identity_complete = False
+    client.execute_command.side_effect = RuntimeError("connection lost")
+
+    result = execute_typed_command(client, pid=123, command="heap_info", params={})
+
+    assert result.status == "error"
+    assert result.meta.identity_complete is False
+
+    client.last_identity_complete = True
+    result = execute_typed_command(client, pid=123, command="heap_info", params={})
+    assert result.status == "error"
+    assert result.meta.identity_complete is True
+
+
+@pytest.mark.unit
 def test_typed_executor_preserves_backend_degradation_metadata() -> None:
     client = MagicMock()
     client.execute_command.return_value = "jvm output"
