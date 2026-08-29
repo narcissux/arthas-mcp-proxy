@@ -31,12 +31,35 @@ class HttpResult:
     backend: str = "arthas_http"
 
 
-class ArthasHttpError(ConnectionError):
+class ArthasHttpError(Exception):
     """HTTP failure with a stable mapping hint for the MCP error contract."""
 
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+_PRE_POST_CONNECT_MARKERS = (
+    "failed to connect",
+    "couldn't connect",
+    "connection refused",
+    "connection timed out",
+)
+
+
+def _curl_failure_code(rc: int, stderr: str, stdout: str) -> str:
+    """Map curl rc to PRE-POST ``unreachable`` vs post-accept ``protocol_error``.
+
+    Honesty: CLI fallback is only for connect refuse / connect timeout
+    (POST never left). ``--fail`` 4xx/5xx (rc 22) and post-submit
+    ``--max-time`` (rc 28 without connect language) are not unreachable.
+    """
+    if rc in {6, 7}:
+        return "unreachable"
+    blob = f"{stderr} {stdout}".lower()
+    if rc == 28 and any(marker in blob for marker in _PRE_POST_CONNECT_MARKERS):
+        return "unreachable"
+    return "protocol_error"
 
 
 class ArthasHttpClient:
@@ -62,7 +85,12 @@ class ArthasHttpClient:
         stdout, stderr, rc = self._execute(curl, timeout=timeout + 5)
         if rc != 0:
             raise ArthasHttpError(
-                stderr or stdout or "Arthas HTTP request failed", code="unreachable"
+                stderr or stdout or "Arthas HTTP request failed",
+                code=_curl_failure_code(rc, stderr, stdout),
+            )
+        if not stdout.strip():
+            raise ArthasHttpError(
+                "Arthas HTTP response body was empty", code="empty_body"
             )
         try:
             body: object = json.loads(stdout)
@@ -71,8 +99,10 @@ class ArthasHttpClient:
             if isinstance(body, str):
                 with suppress(json.JSONDecodeError):
                     body = json.loads(body)
-        except json.JSONDecodeError:
-            return HttpResult(stdout)
+        except json.JSONDecodeError as exc:
+            raise ArthasHttpError(
+                "Arthas HTTP response was not JSON", code="protocol_error"
+            ) from exc
         if isinstance(body, dict):
             state = str(body.get("state", body.get("status", ""))).upper()
             if state in {"FAILED", "ERROR", "FAILURE"} or body.get("success") is False:
@@ -128,7 +158,8 @@ class ArthasHttpStreamingClient:
         stdout, stderr, rc = self._execute(curl, timeout=timeout + 5)
         if rc != 0:
             raise ArthasHttpError(
-                stderr or stdout or "Arthas HTTP streaming request failed", code="unreachable"
+                stderr or stdout or "Arthas HTTP streaming request failed",
+                code=_curl_failure_code(rc, stderr, stdout),
             )
         try:
             value = json.loads(stdout)

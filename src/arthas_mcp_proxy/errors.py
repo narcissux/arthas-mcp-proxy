@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from .arthas_http import ArthasHttpError
 from .models import ErrorCode, ErrorDetail
 
 
@@ -42,6 +43,18 @@ def map_exception(error: Exception) -> ErrorDetail:
         return ErrorDetail(code=ErrorCode.COMMAND_TIMEOUT, message=str(error), retryable=True)
     if isinstance(error, ValueError):
         return ErrorDetail(code=ErrorCode.INVALID_ARGUMENT, message=str(error))
+    if isinstance(error, ArthasHttpError):
+        mapped = {
+            "command_failed": ErrorCode.ARTHAS_COMMAND_FAILED,
+            "protocol_error": ErrorCode.ARTHAS_UNREACHABLE,
+            "empty_body": ErrorCode.ARTHAS_UNREACHABLE,
+            "unreachable": ErrorCode.ARTHAS_UNREACHABLE,
+        }.get(error.code, ErrorCode.ARTHAS_UNREACHABLE)
+        return ErrorDetail(
+            code=mapped,
+            message=str(error),
+            retryable=mapped is ErrorCode.ARTHAS_UNREACHABLE,
+        )
     if isinstance(error, ConnectionError):
         code = getattr(error, "code", "unreachable")
         mapped = {

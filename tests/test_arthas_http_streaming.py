@@ -2,7 +2,7 @@ import json
 import threading
 from contextlib import suppress
 
-from arthas_mcp_proxy.arthas_http import ArthasHttpStreamingClient
+from arthas_mcp_proxy.arthas_http import ArthasHttpError, ArthasHttpStreamingClient
 
 
 def test_http_long_polling_stream_and_interrupt() -> None:
@@ -70,7 +70,7 @@ def test_http_long_polling_contract_uses_basic_auth_and_poll_timeout() -> None:
         return '{"state":"FAILED","message":"bad command"}', "", 0
 
     client = ArthasHttpStreamingClient(execute, 8563, username="admin", password="test-secret")
-    with suppress(ConnectionError):
+    with suppress(ArthasHttpError):
         client._request({"action": "pull_results"}, 300)
     assert "--user admin:test-secret" in calls[0][0]
     assert calls[0][1] == 305
