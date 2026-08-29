@@ -40,8 +40,11 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from arthas_mcp_proxy.application_resolver import find_java_application as resolve_java_application
-from arthas_mcp_proxy.application_resolver import identity_complete
+from arthas_mcp_proxy.application_resolver import (
+    ApplicationCandidate,
+    classify_java_application,
+    identity_complete,
+)
 from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh
 from arthas_mcp_proxy.command_catalog import COMMANDS, build_command
 from arthas_mcp_proxy.cookbook import COOKBOOK
@@ -587,9 +590,29 @@ def list_java_processes(session_id: str) -> str:
         return _structured_error(ErrorCode.INTERNAL_ERROR, f"Error listing Java processes: {e}")
 
 
+def _find_candidate_dict(
+    candidate: ApplicationCandidate,
+    *,
+    handle: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "pid": candidate.pid,
+        "owner": candidate.owner,
+        "start_time": candidate.start_time,
+        "boot_id": candidate.boot_id,
+        "command": candidate.command,
+        "match_evidence": candidate.match_evidence,
+    }
+    if handle is not None:
+        payload["handle"] = handle
+        payload["identity_complete"] = identity_complete(candidate)
+        payload["identity_key"] = list(candidate.identity_key())
+    return payload
+
+
 @mcp.tool()
 def find_java_application(session_id: str, application_name: str) -> str:
-    """Resolve a Java application name to one matching remote JVM candidate."""
+    """Resolve a Java application name to matching remote JVM candidates."""
     pool = get_connection_pool()
     session = pool.get_session(session_id)
     if not session:
@@ -607,27 +630,47 @@ def find_java_application(session_id: str, application_name: str) -> str:
 
     try:
         records = collect_inventory_over_ssh(lambda command: _exec_ssh(session, command))
-        candidate = resolve_java_application(records, application_name)
-        # Preserve the discovered identity for the caller's next Arthas operation.
-        session.start_time = candidate.start_time
-        session.boot_id = candidate.boot_id
+        classified = classify_java_application(records, application_name)
+        handle: str | None = None
+        identity_ok: bool | None = None
+        if classified.status == "matched":
+            candidate = classified.matches[0]
+            session.start_time = candidate.start_time
+            session.boot_id = candidate.boot_id
+            handle = TargetIdentity(
+                host=str(session.host),
+                port=int(session.port),
+                username=str(session.username),
+                pid=candidate.pid,
+                start_time=candidate.start_time,
+            ).handle
+            identity_ok = identity_complete(candidate)
+            candidates = [_find_candidate_dict(item, handle=handle) for item in classified.matches]
+            summary = f"Matched {application_name} at pid {candidate.pid}."
+        elif classified.status == "ambiguous":
+            candidates = [_find_candidate_dict(item) for item in classified.matches]
+            summary = f"Ambiguous: {len(candidates)} processes match {application_name}."
+        else:
+            candidates = [_find_candidate_dict(item) for item in classified.inventory]
+            summary = f"No Java process matched {application_name}."
+        data: dict[str, Any] = {"status": classified.status, "candidates": candidates}
+        if handle is not None:
+            data["handle"] = handle
+        if identity_ok is not None:
+            data["identity_complete"] = identity_ok
         return json.dumps(
-            {
-                "pid": candidate.pid,
-                "command": candidate.command,
-                "owner": candidate.owner,
-                "start_time": candidate.start_time,
-                "boot_id": candidate.boot_id,
-                "identity_key": candidate.identity_key(),
-                "handle": TargetIdentity(
-                    host=str(session.host),
-                    port=int(session.port),
-                    username=str(session.username),
-                    pid=candidate.pid,
-                    start_time=candidate.start_time,
-                ).handle,
-                "identity_complete": identity_complete(candidate),
-            }
+            to_mcp_result(
+                ToolResult(
+                    status="success",
+                    summary=summary,
+                    data=data,
+                    meta=ResultMeta(
+                        request_id=f"req-{uuid.uuid4().hex}",
+                        duration_ms=0,
+                        identity_complete=identity_ok,
+                    ),
+                )
+            )
         )
     except DomainError as exc:
         logger.error("find_java_application failed for %s: %s", application_name, exc)

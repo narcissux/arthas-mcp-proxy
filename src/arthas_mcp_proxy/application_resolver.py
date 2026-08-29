@@ -21,6 +21,15 @@ class ApplicationCandidate:
         return self.pid, self.start_time
 
 
+@dataclass
+class ApplicationMatchResult:
+    """Three-state find result: matched | not_found | ambiguous."""
+
+    status: str
+    matches: list[ApplicationCandidate]
+    inventory: list[ApplicationCandidate]
+
+
 def identity_complete(record: ApplicationCandidate | ProcessRecord) -> bool:
     """True iff start_time and boot_id are both non-empty strings."""
     start_time = record.start_time
@@ -144,13 +153,15 @@ def _parse_listing_line(line: str) -> ApplicationCandidate | None:
     return ApplicationCandidate(pid=pid, command=" ".join(parts[1:]))
 
 
-def find_java_application(
+def classify_java_application(
     sources: Iterable[str] | Iterable[ProcessRecord],
     application_name: str,
     match_mode: str = "auto",
-) -> ApplicationCandidate:
+) -> ApplicationMatchResult:
+    """Classify inventory against application_name without raising on 0/N hits."""
     _require_auto_match_mode(match_mode)
-    candidates: list[ApplicationCandidate] = []
+    inventory: list[ApplicationCandidate] = []
+    matches: list[ApplicationCandidate] = []
     for item in sources:
         if isinstance(item, ProcessRecord):
             parsed: ApplicationCandidate | None = _candidate_from_record(item)
@@ -158,15 +169,31 @@ def find_java_application(
             parsed = _parse_listing_line(item)
         if parsed is None:
             continue
+        inventory.append(parsed)
         matched, evidence = match_application(
             parsed.command, application_name, match_mode=match_mode
         )
         if matched:
-            candidates.append(replace(parsed, match_evidence=evidence))
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        pids = ", ".join(str(candidate.pid) for candidate in candidates)
+            matches.append(replace(parsed, match_evidence=evidence))
+    if len(matches) == 1:
+        status = "matched"
+    elif len(matches) > 1:
+        status = "ambiguous"
+    else:
+        status = "not_found"
+    return ApplicationMatchResult(status=status, matches=matches, inventory=inventory)
+
+
+def find_java_application(
+    sources: Iterable[str] | Iterable[ProcessRecord],
+    application_name: str,
+    match_mode: str = "auto",
+) -> ApplicationCandidate:
+    classified = classify_java_application(sources, application_name, match_mode=match_mode)
+    if classified.status == "matched":
+        return classified.matches[0]
+    if classified.status == "ambiguous":
+        pids = ", ".join(str(candidate.pid) for candidate in classified.matches)
         raise DomainError(
             ErrorCode.JVM_AMBIGUOUS, f"Multiple matches for {application_name}: {pids}"
         )

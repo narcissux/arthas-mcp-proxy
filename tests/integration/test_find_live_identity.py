@@ -27,8 +27,14 @@ def test_b1_3_b_find_returns_live_start_time_and_boot_id(ssh_session: SSHSession
     pool = MagicMock()
     pool.get_session.return_value = ssh_session
     with patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool):
-        payload = json.loads(find_java_application("sess-it", "math-game.jar"))
+        raw = json.loads(find_java_application("sess-it", "math-game.jar"))
 
-    assert payload.get("start_time"), f"expected non-empty start_time, got {payload!r}"
-    assert payload.get("boot_id"), f"expected non-empty Linux boot_id, got {payload!r}"
-    assert "unknown-start" not in payload["handle"]
+    assert raw["isError"] is False
+    data = raw["structuredContent"]["data"]
+    assert data["status"] == "matched"
+    assert len(data["candidates"]) == 1
+    payload = data["candidates"][0]
+    handle = data["handle"]
+    assert payload.get("start_time"), f"expected non-empty start_time, got {raw!r}"
+    assert payload.get("boot_id"), f"expected non-empty Linux boot_id, got {raw!r}"
+    assert "unknown-start" not in handle

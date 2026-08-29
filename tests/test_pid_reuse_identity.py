@@ -238,8 +238,9 @@ def test_b1_4_find_stores_boot_id_on_session() -> None:
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
         patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
     ):
-        payload = json.loads(find_java_application("sess-1", "OrderService"))
+        raw = json.loads(find_java_application("sess-1", "OrderService"))
 
-    assert payload["boot_id"] == BOOT_OLD
+    candidate = raw["structuredContent"]["data"]["candidates"][0]
+    assert candidate["boot_id"] == BOOT_OLD
     assert session.boot_id == BOOT_OLD
     assert session.start_time == "17000"

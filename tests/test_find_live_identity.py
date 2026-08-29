@@ -20,6 +20,15 @@ def _session() -> MagicMock:
     return s
 
 
+def _data(result: str) -> dict:
+    payload = json.loads(result)
+    return payload["structuredContent"]["data"]
+
+
+def _first_candidate(result: str) -> dict:
+    return _data(result)["candidates"][0]
+
+
 @pytest.mark.contract
 def test_b1_3_a_find_carries_inventory_start_time_and_boot_id() -> None:
     """B1-3-a: mock inventory with start_time+boot_id appears in find JSON."""
@@ -40,15 +49,20 @@ def test_b1_3_a_find_carries_inventory_start_time_and_boot_id() -> None:
             return_value=[record],
         ),
     ):
-        payload = json.loads(find_java_application("sess-1", "OrderService.jar"))
+        result = find_java_application("sess-1", "OrderService.jar")
 
+    data = _data(result)
+    payload = _first_candidate(result)
+    assert data["status"] == "matched"
     assert payload["pid"] == 4242
     assert payload["start_time"] == "17000"
     assert payload["boot_id"] == BOOT_ID
     assert payload.get("identity_complete") is True
     assert payload["identity_key"] != [4242, None]
-    assert "unknown-start" not in payload["handle"]
-    assert payload["handle"] == TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
+    handle = data.get("handle") or payload.get("handle")
+    assert handle
+    assert "unknown-start" not in handle
+    assert handle == TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
 
 
 @pytest.mark.contract
@@ -71,8 +85,9 @@ def test_b1_3_c_jps_only_marks_identity_incomplete() -> None:
             return_value=[record],
         ),
     ):
-        payload = json.loads(find_java_application("sess-1", "OrderService"))
+        result = find_java_application("sess-1", "OrderService")
 
+    payload = _first_candidate(result)
     assert payload["pid"] == 4242
     assert payload["start_time"] is None
     assert payload["boot_id"] is None

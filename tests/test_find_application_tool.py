@@ -1,9 +1,10 @@
-"""Contract tests for the find_java_application MCP tool (B1).
+"""Contract tests for the find_java_application MCP tool (B1 / B2-2).
 
 The tool resolves a Java application name to its process details by listing
 Java processes over the existing SSH session and matching against the
 application resolver. This contract pins its registration, input schema, and
-mocked resolution behavior.
+mocked resolution behavior. Success-shaped results use the B2-2 envelope
+(status + candidates).
 """
 
 from __future__ import annotations
@@ -15,6 +16,15 @@ import pytest
 
 from arthas_mcp_proxy.process_inventory import ProcessRecord
 from arthas_mcp_proxy.server import find_java_application, mcp
+
+
+def _data(result: str) -> dict:
+    payload = json.loads(result)
+    return payload["structuredContent"]["data"]
+
+
+def _first_candidate(result: str) -> dict:
+    return _data(result)["candidates"][0]
 
 
 @pytest.mark.contract
@@ -55,7 +65,9 @@ def test_find_java_application_returns_json_candidate() -> None:
     ):
         result = find_java_application("sess-1", "OrderService")
 
-    payload = json.loads(result)
+    data = _data(result)
+    assert data["status"] == "matched"
+    payload = _first_candidate(result)
     assert payload["pid"] == 5678
     assert payload["command"] == "com.example.OrderService"
     assert payload["owner"] is None
@@ -83,12 +95,14 @@ def test_find_java_application_passes_start_time_to_arthas_state() -> None:
     ):
         result = find_java_application("sess-1", "OrderService")
 
-    payload = json.loads(result)
+    payload = _first_candidate(result)
     assert payload["start_time"] == "2026-08-01T10:00:00"
     assert session.start_time == "2026-08-01T10:00:00"
     assert payload["boot_id"] is None
     assert payload["identity_complete"] is False
-    assert "unknown-start" not in payload["handle"]
+    handle = _data(result).get("handle") or payload.get("handle")
+    assert handle
+    assert "unknown-start" not in handle
 
 
 @pytest.mark.contract
@@ -111,13 +125,14 @@ def test_find_java_application_returns_stable_jvm_handle() -> None:
     ):
         result = find_java_application("sess-1", "OrderService")
 
-    payload = json.loads(result)
-    assert payload["handle"] == "jvm:example.test:2222:deploy:5678:2026-08-01T10:00:00"
+    payload = _first_candidate(result)
+    handle = _data(result).get("handle") or payload.get("handle")
+    assert handle == "jvm:example.test:2222:deploy:5678:2026-08-01T10:00:00"
 
 
 @pytest.mark.contract
-def test_find_java_application_maps_not_found_to_error() -> None:
-    """A DomainError from the resolver must surface as an Error: result."""
+def test_find_java_application_not_found_is_success_envelope() -> None:
+    """Zero matches with other Java processes is not_found, not JVM_NOT_FOUND error."""
     session = MagicMock()
     pool = MagicMock()
     pool.get_session.return_value = session
@@ -130,9 +145,12 @@ def test_find_java_application_maps_not_found_to_error() -> None:
         result = find_java_application("sess-1", "Missing")
 
     payload = json.loads(result)
-    assert payload["isError"] is True
-    assert payload["structuredContent"]["error"]["code"] == "JVM_NOT_FOUND"
-    assert "Missing" in payload["structuredContent"]["summary"]
+    assert payload["isError"] is False
+    data = payload["structuredContent"]["data"]
+    assert data["status"] == "not_found"
+    assert data["candidates"]
+    error = payload["structuredContent"].get("error")
+    assert error is None or error.get("code") != "JVM_NOT_FOUND"
 
 
 @pytest.mark.contract
