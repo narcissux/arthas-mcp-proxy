@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -224,13 +225,12 @@ class TestWatchMethod:
     def test_watch_math_game(
         self, arthas_client: "ArthasClient", target_pid: int
     ) -> None:
-        result = arthas_client.watch_method(
+        result = arthas_client.execute_streaming_command(
             pid=target_pid,
-            class_pattern="demo.MathGame",
-            method_pattern="primeFactors",
-            watch_params=True,
-            watch_return=True,
-            times=3,
+            command="watch demo.MathGame primeFactors -n 3",
+            emit=lambda _chunk: None,
+            cancel=threading.Event(),
+            timeout=30,
         )
         logger.info("watch_method result (first 300 chars): %.300s", result)
         assert "error" not in result.lower() or "no class" in result.lower(), result

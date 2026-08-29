@@ -1,33 +1,26 @@
-"""Real PID-reuse/identity checks against the Docker JVM target."""
+"""B6 docker/real-target e2e for PID replacement via MCP tools.
+
+Unit/contract locks for B6-a–d live in tests/test_handle_pid_reuse.py
+(mocked inventory). This module only holds the docker/real-target path and
+does not call validate_process_identity.
+"""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from arthas_mcp_proxy.application_resolver import validate_process_identity
-from arthas_mcp_proxy.errors import DomainError
-from arthas_mcp_proxy.models import ErrorCode
 
-pytestmark = [pytest.mark.integration, pytest.mark.real_jvm]
-
-
-def test_real_jvm_exit_and_pid_replacement(
-    pid_replacement_target: dict[str, str | int],
-) -> None:
-    """A real JVM exit is distinguished from a replacement with new identity."""
-    old_pid = int(pid_replacement_target["old_pid"])
-    old_start = str(pid_replacement_target["old_start"])
-    replacement_pid = int(pid_replacement_target["replacement_pid"])
-    replacement_start = str(pid_replacement_target["replacement_start"])
-    replacement_lines = [str(pid_replacement_target["replacement_line"])]
-
-    assert replacement_pid == old_pid
-    assert replacement_start != old_start
-
-    with pytest.raises(DomainError) as exited:
-        validate_process_identity([], old_pid, old_start)
-    assert exited.value.code is ErrorCode.JVM_EXITED
-
-    with pytest.raises(DomainError) as changed:
-        validate_process_identity(replacement_lines, old_pid, old_start)
-    assert changed.value.code is ErrorCode.JVM_IDENTITY_CHANGED
+@pytest.mark.integration
+@pytest.mark.real_jvm
+def test_b6_docker_pid_replacement_via_mcp_tools(request: pytest.FixtureRequest) -> None:
+    """B6 docker e2e: find/prepare/thread_dump across a real PID replacement."""
+    use_docker = bool(request.config.getoption("--docker-target", default=False))
+    has_ssh_host = bool(os.environ.get("TEST_SSH_HOST"))
+    if not use_docker and not has_ssh_host:
+        pytest.skip("specified-not-run: no docker/target")
+    pytest.fail(
+        "B6 docker e2e not implemented; not green: "
+        "live find/prepare/thread_dump kill+restart path is not wired"
+    )

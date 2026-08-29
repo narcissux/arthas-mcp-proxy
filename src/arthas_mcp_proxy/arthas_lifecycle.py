@@ -30,6 +30,10 @@ class ArthasInstanceRegistry:
             return None
         return self._instances.pop(identity)
 
+    def forget(self, identity: TargetIdentity) -> "ArthasInstance | None":
+        """Drop a cached instance regardless of origin (failed verify / half-ready)."""
+        return self._instances.pop(identity, None)
+
     def cleanup_candidates(self, now: datetime, ttl_seconds: int) -> list["ArthasInstance"]:
         return [
             instance
@@ -70,6 +74,14 @@ class ArthasOrigin(Enum):
     EXISTING = "existing"
     STARTED_BY_PROXY = "started_by_proxy"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class PreparedArthas:
+    origin: ArthasOrigin
+    telnet_port: int
+    http_port: int | None
+    arthas_version: str
 
 
 @dataclass
