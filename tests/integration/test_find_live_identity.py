@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -38,3 +39,5 @@ def test_b1_3_b_find_returns_live_start_time_and_boot_id(ssh_session: SSHSession
     assert payload.get("start_time"), f"expected non-empty start_time, got {raw!r}"
     assert payload.get("boot_id"), f"expected non-empty Linux boot_id, got {raw!r}"
     assert "unknown-start" not in handle
+    assert re.fullmatch(r"jvm_[0-9a-f]{16,}", handle), handle
+    assert not handle.startswith("jvm:")

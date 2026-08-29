@@ -43,9 +43,11 @@ def clear_pid_state() -> Generator[None, None, None]:
         _PID_STATE,
         _PID_STATE_LOCK,
     )
+    from arthas_mcp_proxy.jvm_registry import reset_jvm_registry
 
     with _PID_STATE_LOCK:
         _PID_STATE.clear()
     with _ATTACH_LOCKS_MASTER:
         _ATTACH_LOCKS.clear()
+    reset_jvm_registry()
     yield

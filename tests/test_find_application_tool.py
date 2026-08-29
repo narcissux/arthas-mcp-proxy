@@ -10,12 +10,17 @@ mocked resolution behavior. Success-shaped results use the B2-2 envelope
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arthas_mcp_proxy.jvm_registry import reset_jvm_registry
 from arthas_mcp_proxy.process_inventory import ProcessRecord
 from arthas_mcp_proxy.server import find_java_application, mcp
+from arthas_mcp_proxy.target_state import TargetIdentity
+
+OPAQUE_HANDLE_RE = re.compile(r"^jvm_[0-9a-f]{16,}$")
 
 
 def _data(result: str) -> dict:
@@ -59,6 +64,7 @@ def test_find_java_application_returns_json_candidate() -> None:
     pool.get_session.return_value = session
     record = ProcessRecord(pid=5678, command="com.example.OrderService")
 
+    reset_jvm_registry()
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
         patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
@@ -89,6 +95,7 @@ def test_find_java_application_passes_start_time_to_arthas_state() -> None:
         boot_id=None,
     )
 
+    reset_jvm_registry()
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
         patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
@@ -119,6 +126,7 @@ def test_find_java_application_returns_stable_jvm_handle() -> None:
         boot_id=None,
     )
 
+    reset_jvm_registry()
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
         patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
@@ -127,7 +135,11 @@ def test_find_java_application_returns_stable_jvm_handle() -> None:
 
     payload = _first_candidate(result)
     handle = _data(result).get("handle") or payload.get("handle")
-    assert handle == "jvm:example.test:2222:deploy:5678:2026-08-01T10:00:00"
+    reversible = TargetIdentity("example.test", 2222, "deploy", 5678, "2026-08-01T10:00:00").handle
+    assert OPAQUE_HANDLE_RE.fullmatch(handle)
+    assert handle != reversible
+    assert handle != "jvm:example.test:2222:deploy:5678:2026-08-01T10:00:00"
+    assert not handle.startswith("jvm:")
 
 
 @pytest.mark.contract

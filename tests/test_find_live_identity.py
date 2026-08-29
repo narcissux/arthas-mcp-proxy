@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arthas_mcp_proxy.jvm_registry import reset_jvm_registry
 from arthas_mcp_proxy.process_inventory import ProcessRecord
 from arthas_mcp_proxy.server import find_java_application
 from arthas_mcp_proxy.target_state import TargetIdentity
+
+OPAQUE_HANDLE_RE = re.compile(r"^jvm_[0-9a-f]{16,}$")
 
 BOOT_ID = "2f4c1b6a-9d3e-4a10-8c2b-77e0d1a2b3c4"
 
@@ -42,6 +46,7 @@ def test_b1_3_a_find_carries_inventory_start_time_and_boot_id() -> None:
         start_time="17000",
         boot_id=BOOT_ID,
     )
+    reset_jvm_registry()
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
         patch(
@@ -62,7 +67,10 @@ def test_b1_3_a_find_carries_inventory_start_time_and_boot_id() -> None:
     handle = data.get("handle") or payload.get("handle")
     assert handle
     assert "unknown-start" not in handle
-    assert handle == TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
+    reversible = TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
+    assert OPAQUE_HANDLE_RE.fullmatch(handle)
+    assert handle != reversible
+    assert not handle.startswith("jvm:")
 
 
 @pytest.mark.contract
@@ -78,6 +86,7 @@ def test_b1_3_c_jps_only_marks_identity_incomplete() -> None:
         start_time=None,
         boot_id=None,
     )
+    reset_jvm_registry()
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
         patch(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,8 @@ import pytest
 from arthas_mcp_proxy.process_inventory import ProcessRecord
 from arthas_mcp_proxy.server import find_java_application
 from arthas_mcp_proxy.target_state import TargetIdentity
+
+OPAQUE_HANDLE_RE = re.compile(r"^jvm_[0-9a-f]{16,}$")
 
 BOOT_ID = "2f4c1b6a-9d3e-4a10-8c2b-77e0d1a2b3c4"
 
@@ -74,7 +77,10 @@ def test_b2_2_a_unique_hit_is_matched_envelope() -> None:
     assert candidate["boot_id"] == BOOT_ID
     assert candidate["command"] == record.command
     assert candidate["match_evidence"] == "jar_basename"
-    assert data["handle"] == TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
+    reversible = TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
+    assert OPAQUE_HANDLE_RE.fullmatch(data["handle"])
+    assert data["handle"] != reversible
+    assert not data["handle"].startswith("jvm:")
     assert data["identity_complete"] is True
     assert candidate["identity_complete"] is True
     assert session.start_time == "17000"
@@ -178,3 +184,47 @@ def test_b2_2_d_missing_session_is_error() -> None:
     assert payload["isError"] is True
     assert payload["structuredContent"]["status"] == "error"
     assert payload["structuredContent"]["error"]["code"] == "SESSION_NOT_FOUND"
+
+
+@pytest.mark.contract
+def test_b3_1_g_unique_match_returns_opaque_handle() -> None:
+    """B3-1-g: find unique match returns opaque jvm_ handle, not colon form."""
+    record = ProcessRecord(
+        pid=4242,
+        command="java -jar /opt/apps/inventory-service.jar --server.port=8080",
+        owner="appuser",
+        start_time="17000",
+        boot_id=BOOT_ID,
+    )
+    payload, ensure, attach, client_cls, _session_obj = _call([record], "inventory-service.jar")
+
+    data = _data(payload)
+    handle = data["handle"]
+    reversible = TargetIdentity("10.0.0.8", 22, "ops", 4242, "17000").handle
+    assert OPAQUE_HANDLE_RE.fullmatch(handle)
+    assert handle != reversible
+    assert not handle.startswith("jvm:")
+    candidate = data["candidates"][0]
+    assert candidate["handle"] == handle
+    ensure.assert_not_called()
+    attach.assert_not_called()
+    client_cls.assert_not_called()
+
+
+@pytest.mark.contract
+def test_b3_1_f_same_jvm_two_finds_reuse_handle() -> None:
+    """B3-1-f (find): two find_java_application calls reuse the unexpired handle."""
+    record = ProcessRecord(
+        pid=4242,
+        command="java -jar /opt/apps/inventory-service.jar --server.port=8080",
+        owner="appuser",
+        start_time="17000",
+        boot_id=BOOT_ID,
+    )
+    session = _session()
+    first, *_rest = _call([record], "inventory-service.jar", session=session)
+    second, *_rest = _call([record], "inventory-service.jar", session=session)
+    first_handle = _data(first)["handle"]
+    second_handle = _data(second)["handle"]
+    assert first_handle == second_handle
+    assert OPAQUE_HANDLE_RE.fullmatch(first_handle)

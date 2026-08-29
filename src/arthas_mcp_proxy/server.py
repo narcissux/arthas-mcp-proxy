@@ -55,6 +55,7 @@ from arthas_mcp_proxy.job_manager import ThreadPoolJobManager
 from arthas_mcp_proxy.job_serialization import serialize_job
 from arthas_mcp_proxy.job_store import JobStore, SQLiteJobStore
 from arthas_mcp_proxy.jobs import JobStatus
+from arthas_mcp_proxy.jvm_registry import get_jvm_registry
 from arthas_mcp_proxy.models import ErrorCode, ErrorDetail, ResultMeta, ToolResult
 from arthas_mcp_proxy.observation_policy import ObservationPolicy
 from arthas_mcp_proxy.output_limit import limit_output, paginate_output
@@ -64,7 +65,7 @@ from arthas_mcp_proxy.process_inventory import (
 )
 from arthas_mcp_proxy.result_adapter import to_mcp_result
 from arthas_mcp_proxy.ssh_pool import get_connection_pool
-from arthas_mcp_proxy.target_state import TargetIdentity
+from arthas_mcp_proxy.target_state import target_key
 from arthas_mcp_proxy.typed_tool import typed_command_json
 
 
@@ -637,13 +638,13 @@ def find_java_application(session_id: str, application_name: str) -> str:
             candidate = classified.matches[0]
             session.start_time = candidate.start_time
             session.boot_id = candidate.boot_id
-            handle = TargetIdentity(
-                host=str(session.host),
-                port=int(session.port),
-                username=str(session.username),
+            handle = get_jvm_registry().mint(
+                target_key=target_key(session.host, session.port, session.username),
                 pid=candidate.pid,
                 start_time=candidate.start_time,
-            ).handle
+                boot_id=candidate.boot_id,
+                application_name=application_name,
+            )
             identity_ok = identity_complete(candidate)
             candidates = [_find_candidate_dict(item, handle=handle) for item in classified.matches]
             summary = f"Matched {application_name} at pid {candidate.pid}."
