@@ -5,47 +5,74 @@ import pytest
 from arthas_mcp_proxy.server import _job_store, get_diagnostic_job, start_diagnostic_job
 
 
+def _start_job_error_code(raw: str) -> str:
+    payload = json.loads(raw)
+    assert payload["isError"] is True
+    return str(payload["structuredContent"]["error"]["code"])
+
+
 @pytest.mark.contract
 def test_start_diagnostic_job_returns_succeeded_job() -> None:
-    payload = json.loads(start_diagnostic_job("thread_dump", {"top_n": 5}))
-    assert payload["job_id"]
-    assert payload["status"] == "SUCCEEDED"
-    assert payload["completed_at"] is not None
-    assert "thread" in payload["output"]
-    assert "5" in payload["output"]
+    """C4-a: start without a JVM target is INVALID_ARGUMENT, not fake SUCCEEDED."""
+    raw = start_diagnostic_job("thread_dump", {"top_n": 5})
+    assert _start_job_error_code(raw) == "INVALID_ARGUMENT"
+    assert "SUCCEEDED" not in raw
 
 
 @pytest.mark.contract
 def test_start_diagnostic_job_exposes_completed_at() -> None:
-    payload = json.loads(start_diagnostic_job("heap_info", {}))
-    assert payload["status"] == "SUCCEEDED"
-    assert payload["completed_at"] is not None
-    retrieved = json.loads(get_diagnostic_job(payload["job_id"]))
-    assert retrieved["completed_at"] is not None
+    """C4-a: heap_info without a target cannot fake a completed job."""
+    raw = start_diagnostic_job("heap_info", {})
+    assert _start_job_error_code(raw) == "INVALID_ARGUMENT"
+    assert "completed_at" not in raw or json.loads(raw).get("status") != "SUCCEEDED"
 
 
 @pytest.mark.contract
 def test_start_diagnostic_job_rejects_unknown_command() -> None:
-    assert start_diagnostic_job("unknown", {}).startswith("Error:")
+    """Missing target is rejected first even for an unknown command (C4-a)."""
+    raw = start_diagnostic_job("unknown", {})
+    assert _start_job_error_code(raw) == "INVALID_ARGUMENT"
 
 
 @pytest.mark.contract
 def test_start_diagnostic_job_invalid_command_leaves_no_orphan_job() -> None:
-    """A rejected command must not persist a RUNNING job (C1)."""
+    """A rejected start must not persist a RUNNING job (C4-a)."""
     store = _job_store
     before = {job.job_id for job in store._jobs.values()}
     result = start_diagnostic_job("unknown", {})
-    assert result.startswith("Error:")
+    assert _start_job_error_code(result) == "INVALID_ARGUMENT"
     after = {job.job_id for job in store._jobs.values()}
     assert after == before
 
 
 @pytest.mark.contract
+def test_start_diagnostic_job_valid_command_without_target_leaves_no_orphan() -> None:
+    """C4-a: thread_dump without a target must not create a job."""
+    before = {job.job_id for job in _job_store._jobs.values()}
+    result = start_diagnostic_job("thread_dump", {})
+    assert _start_job_error_code(result) == "INVALID_ARGUMENT"
+    after = {job.job_id for job in _job_store._jobs.values()}
+    assert after == before
+
+
+@pytest.mark.contract
+def test_start_diagnostic_job_unknown_with_target_leaves_no_orphan() -> None:
+    before = {job.job_id for job in _job_store._jobs.values()}
+    result = start_diagnostic_job("unknown", {}, "session", 123)
+    assert result.startswith("Error:") or (
+        json.loads(result).get("isError") is True
+    )
+    after = {job.job_id for job in _job_store._jobs.values()}
+    assert after == before
+    running = [job for job in _job_store._jobs.values() if job.job_id not in before]
+    assert all(job.status.value != "RUNNING" for job in running)
+
+
+@pytest.mark.contract
 def test_start_diagnostic_job_output_is_retrievable() -> None:
-    payload = json.loads(start_diagnostic_job("thread_dump", {"top_n": 5}))
-    retrieved = json.loads(get_diagnostic_job(payload["job_id"]))
-    assert retrieved["output"] == "thread -n 5"
-    assert retrieved["next_cursor"] is None
+    """C4-a: no-target start is not a retrievable SUCCEEDED render."""
+    raw = start_diagnostic_job("thread_dump", {"top_n": 5})
+    assert _start_job_error_code(raw) == "INVALID_ARGUMENT"
 
 
 @pytest.mark.contract

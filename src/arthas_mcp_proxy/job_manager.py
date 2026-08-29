@@ -150,7 +150,14 @@ class ThreadPoolJobManager:
                     job.subscribers.remove((loop, queue))
 
     def websocket_app(self) -> Starlette:
+        """Mount the proxy-side job event stream (not an Arthas command channel)."""
+
         async def stream_socket(websocket: WebSocket) -> None:
+            """Proxy job event stream: JSON output/terminal events, not Arthas WS.
+
+            ``/jobs/{job_id}/stream`` is a local proxy transport. It is not an
+            Arthas command channel, not a tunnel, and not an Arthas WebSocket.
+            """
             await websocket.accept()
             job_id = websocket.path_params["job_id"]
             stream = self.stream(job_id)

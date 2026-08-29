@@ -15,6 +15,8 @@ from .errors import DomainError
 from .jobs import DiagnosticJob, JobStatus
 from .models import ErrorCode
 
+JOB_MAX_ACTIVE_PER_JVM = 3
+
 
 class JobStore:
     def __init__(
@@ -31,8 +33,21 @@ class JobStore:
         self._max_jobs, self._ttl = max_jobs, timedelta(seconds=ttl_seconds)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def create(self) -> DiagnosticJob:
-        job = DiagnosticJob(f"job-{uuid.uuid4().hex}", JobStatus.RUNNING, self._clock())
+    @staticmethod
+    def _quota_bucket(job: DiagnosticJob) -> str | None:
+        return job.jvm_handle or job.quota_key
+
+    def create(
+        self, *, jvm_handle: str | None = None, quota_key: str | None = None
+    ) -> DiagnosticJob:
+        job = DiagnosticJob(
+            f"job-{uuid.uuid4().hex}",
+            JobStatus.RUNNING,
+            self._clock(),
+            jvm_handle=jvm_handle,
+            quota_key=quota_key,
+        )
+        bucket = jvm_handle or quota_key
         with self._lock:
             self._expire_stale_locked()
             if sum(not item.is_finished for item in self._jobs.values()) >= self._max_jobs:
@@ -40,6 +55,18 @@ class JobStore:
                     ErrorCode.JOB_QUOTA_EXCEEDED,
                     "Maximum number of running diagnostic jobs reached",
                 )
+            if bucket:
+                running_for_jvm = sum(
+                    1
+                    for item in self._jobs.values()
+                    if not item.is_finished and self._quota_bucket(item) == bucket
+                )
+                if running_for_jvm >= JOB_MAX_ACTIVE_PER_JVM:
+                    raise DomainError(
+                        ErrorCode.JOB_QUOTA_EXCEEDED,
+                        "Maximum number of running diagnostic jobs per JVM "
+                        f"is {JOB_MAX_ACTIVE_PER_JVM}",
+                    )
             self._jobs[job.job_id] = job
         return job
 
@@ -51,13 +78,24 @@ class JobStore:
             raise DomainError(ErrorCode.JOB_NOT_FOUND, f"Job not found: {job_id}")
         return job
 
-    def list(self, *, status: JobStatus | None = None, limit: int = 50) -> list[DiagnosticJob]:
+    def list(
+        self,
+        *,
+        status: JobStatus | None = None,
+        limit: int = 50,
+        jvm_handle: str | None = None,
+    ) -> list[DiagnosticJob]:
         if limit < 1:
             raise ValueError("limit must be positive")
         with self._lock:
             self._expire_stale_locked()
             jobs = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
-            return [job for job in jobs if status is None or job.status is status][:limit]
+            return [
+                job
+                for job in jobs
+                if (status is None or job.status is status)
+                and (jvm_handle is None or job.jvm_handle == jvm_handle)
+            ][:limit]
 
     def _expire_stale_locked(self) -> None:
         now = self._clock()
@@ -122,8 +160,14 @@ class SQLiteJobStore(JobStore):
             db.execute(
                 "CREATE TABLE IF NOT EXISTS jobs ("
                 "job_id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, "
-                "completed_at TEXT, output TEXT NOT NULL, error TEXT)"
+                "completed_at TEXT, output TEXT NOT NULL, error TEXT, jvm_handle TEXT, "
+                "quota_key TEXT)"
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            if "jvm_handle" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN jvm_handle TEXT")
+            if "quota_key" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN quota_key TEXT")
             db.execute(
                 "UPDATE jobs SET status=?, completed_at=?, error=? WHERE status=?",
                 (
@@ -141,6 +185,7 @@ class SQLiteJobStore(JobStore):
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> DiagnosticJob:
+        keys = set(row.keys())
         return DiagnosticJob(
             row["job_id"],
             JobStatus(row["status"]),
@@ -148,6 +193,8 @@ class SQLiteJobStore(JobStore):
             datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             row["output"],
             json.loads(row["error"]) if row["error"] else None,
+            jvm_handle=row["jvm_handle"] if "jvm_handle" in keys else None,
+            quota_key=row["quota_key"] if "quota_key" in keys else None,
         )
 
     def _expire_locked(self, db: sqlite3.Connection) -> None:
@@ -162,8 +209,26 @@ class SQLiteJobStore(JobStore):
             ),
         )
 
-    def create(self) -> DiagnosticJob:
-        job = DiagnosticJob(f"job-{uuid.uuid4().hex}", JobStatus.RUNNING, self._clock())
+    def _count_running_for_quota(self, db: sqlite3.Connection, bucket: str) -> int:
+        return int(
+            db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status=? AND "
+                "(jvm_handle=? OR (jvm_handle IS NULL AND quota_key=?))",
+                (JobStatus.RUNNING.value, bucket, bucket),
+            ).fetchone()[0]
+        )
+
+    def create(
+        self, *, jvm_handle: str | None = None, quota_key: str | None = None
+    ) -> DiagnosticJob:
+        job = DiagnosticJob(
+            f"job-{uuid.uuid4().hex}",
+            JobStatus.RUNNING,
+            self._clock(),
+            jvm_handle=jvm_handle,
+            quota_key=quota_key,
+        )
+        bucket = jvm_handle or quota_key
         with self._lock, self._connect() as db:
             self._expire_locked(db)
             if (
@@ -176,9 +241,25 @@ class SQLiteJobStore(JobStore):
                     ErrorCode.JOB_QUOTA_EXCEEDED,
                     "Maximum number of running diagnostic jobs reached",
                 )
+            running_for_jvm = self._count_running_for_quota(db, bucket) if bucket else 0
+            if bucket and running_for_jvm >= JOB_MAX_ACTIVE_PER_JVM:
+                raise DomainError(
+                    ErrorCode.JOB_QUOTA_EXCEEDED,
+                    "Maximum number of running diagnostic jobs per JVM "
+                    f"is {JOB_MAX_ACTIVE_PER_JVM}",
+                )
             db.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?)",
-                (job.job_id, job.status.value, job.created_at.isoformat(), None, job.output, None),
+                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job.job_id,
+                    job.status.value,
+                    job.created_at.isoformat(),
+                    None,
+                    job.output,
+                    None,
+                    job.jvm_handle,
+                    job.quota_key,
+                ),
             )
         return job
 
@@ -190,15 +271,28 @@ class SQLiteJobStore(JobStore):
             raise DomainError(ErrorCode.JOB_NOT_FOUND, f"Job not found: {job_id}")
         return self._from_row(row)
 
-    def list(self, *, status: JobStatus | None = None, limit: int = 50) -> list[DiagnosticJob]:
+    def list(
+        self,
+        *,
+        status: JobStatus | None = None,
+        limit: int = 50,
+        jvm_handle: str | None = None,
+    ) -> list[DiagnosticJob]:
         if limit < 1:
             raise ValueError("limit must be positive")
         with self._lock, self._connect() as db:
             self._expire_locked(db)
-            query: str = "SELECT * FROM jobs"
-            params: tuple[str, ...] = ()
+            clauses: list[str] = []
+            params: list[Any] = []
             if status is not None:
-                query, params = query + " WHERE status=?", (status.value,)
+                clauses.append("status=?")
+                params.append(status.value)
+            if jvm_handle is not None:
+                clauses.append("jvm_handle=?")
+                params.append(jvm_handle)
+            query = "SELECT * FROM jobs"
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
             rows = db.execute(
                 query + " ORDER BY created_at DESC LIMIT ?", (*params, limit)
             ).fetchall()

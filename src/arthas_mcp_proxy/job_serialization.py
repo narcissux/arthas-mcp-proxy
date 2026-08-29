@@ -14,4 +14,6 @@ def serialize_job(job: DiagnosticJob) -> str:
     }
     if job.error is not None:
         payload["error"] = job.error
+    if job.jvm_handle:
+        payload["jvm_handle"] = job.jvm_handle
     return json.dumps(payload)

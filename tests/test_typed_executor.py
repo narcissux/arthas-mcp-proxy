@@ -17,7 +17,9 @@ def test_typed_executor_runs_catalog_command_through_client() -> None:
     assert result.status == "success"
     data = cast("dict[str, Any]", result.data)
     assert data["output"] == "thread output"
-    client.execute_command.assert_called_once_with(pid=123, command="thread -n 5", timeout=60)
+    client.execute_command.assert_called_once_with(
+        pid=123, command="thread -n 5", timeout=60, cancel=None
+    )
 
 
 @pytest.mark.unit
@@ -92,4 +94,34 @@ def test_typed_executor_uses_new_catalog_command_without_raw_command_access() ->
     result = execute_typed_command(client, pid=123, command="version", params={})
 
     assert result.status == "success"
-    client.execute_command.assert_called_once_with(pid=123, command="version", timeout=60)
+    client.execute_command.assert_called_once_with(
+        pid=123, command="version", timeout=60, cancel=None
+    )
+
+
+@pytest.mark.unit
+def test_typed_executor_remaps_arthas_ws_to_product_backend() -> None:
+    client = MagicMock()
+    client.execute_command.return_value = "ok"
+    client.last_backend = "arthas_ws"
+    result = execute_typed_command(client, pid=123, command="thread_dump", params={"top_n": 1})
+    assert result.status == "success"
+    assert result.meta.backend != "arthas_ws"
+    assert result.meta.backend in {
+        "ssh",
+        "arthas_cli",
+        "arthas_http",
+        "arthas_http_long_polling",
+    }
+
+
+@pytest.mark.unit
+def test_typed_executor_keeps_streaming_backend_name() -> None:
+    from arthas_mcp_proxy.arthas_http import ArthasHttpStreamingClient
+
+    client = MagicMock()
+    client.execute_command.return_value = "ok"
+    client.last_backend = ArthasHttpStreamingClient.backend_name
+    result = execute_typed_command(client, pid=123, command="thread_dump", params={"top_n": 1})
+    assert result.meta.backend == ArthasHttpStreamingClient.backend_name
+
