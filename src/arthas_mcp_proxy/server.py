@@ -41,6 +41,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from arthas_mcp_proxy.application_resolver import find_java_application as resolve_java_application
+from arthas_mcp_proxy.application_resolver import identity_complete
 from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh
 from arthas_mcp_proxy.command_catalog import COMMANDS, build_command
 from arthas_mcp_proxy.cookbook import COOKBOOK
@@ -605,9 +606,8 @@ def find_java_application(session_id: str, application_name: str) -> str:
             )
 
     try:
-        discovery_client = ArthasClient(session)
-        output = discovery_client.list_java_processes()
-        candidate = resolve_java_application(output.splitlines(), application_name)
+        records = collect_inventory_over_ssh(lambda command: _exec_ssh(session, command))
+        candidate = resolve_java_application(records, application_name)
         # Preserve the discovered identity for the caller's next Arthas operation.
         session.start_time = candidate.start_time
         return json.dumps(
@@ -616,6 +616,7 @@ def find_java_application(session_id: str, application_name: str) -> str:
                 "command": candidate.command,
                 "owner": candidate.owner,
                 "start_time": candidate.start_time,
+                "boot_id": candidate.boot_id,
                 "identity_key": candidate.identity_key(),
                 "handle": TargetIdentity(
                     host=str(session.host),
@@ -624,6 +625,7 @@ def find_java_application(session_id: str, application_name: str) -> str:
                     pid=candidate.pid,
                     start_time=candidate.start_time,
                 ).handle,
+                "identity_complete": identity_complete(candidate),
             }
         )
     except DomainError as exc:

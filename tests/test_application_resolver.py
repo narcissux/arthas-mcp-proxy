@@ -3,11 +3,13 @@ import pytest
 from arthas_mcp_proxy.application_resolver import (
     ApplicationCandidate,
     find_java_application,
+    identity_complete,
     is_same_process,
     validate_process_identity,
 )
 from arthas_mcp_proxy.errors import DomainError
 from arthas_mcp_proxy.models import ErrorCode
+from arthas_mcp_proxy.process_inventory import ProcessRecord
 
 
 @pytest.mark.contract
@@ -165,3 +167,35 @@ def test_validate_process_identity_rejects_missing_runtime_start_time() -> None:
     with pytest.raises(DomainError) as exc_info:
         validate_process_identity(["42 com.example.Service"], 42, "2026-08-01T10:00:00")
     assert exc_info.value.code is ErrorCode.JVM_IDENTITY_CHANGED
+
+
+@pytest.mark.contract
+def test_find_java_application_matches_process_record_last_token() -> None:
+    records = [
+        ProcessRecord(pid=1, command="java -jar Other.jar"),
+        ProcessRecord(
+            pid=4242,
+            command="java -jar OrderService.jar",
+            owner="appuser",
+            start_time="17000",
+            boot_id="2f4c1b6a-9d3e-4a10-8c2b-77e0d1a2b3c4",
+        ),
+    ]
+    result = find_java_application(records, "OrderService.jar")
+    assert result.pid == 4242
+    assert result.command == "java -jar OrderService.jar"
+    assert result.owner == "appuser"
+    assert result.start_time == "17000"
+    assert result.boot_id == "2f4c1b6a-9d3e-4a10-8c2b-77e0d1a2b3c4"
+
+
+@pytest.mark.contract
+def test_identity_complete_true_only_when_start_time_and_boot_id_present() -> None:
+    complete = ProcessRecord(pid=1, command="app", start_time="17000", boot_id="boot-1")
+    missing_boot = ProcessRecord(pid=1, command="app", start_time="17000", boot_id=None)
+    missing_start = ProcessRecord(pid=1, command="app", start_time=None, boot_id="boot-1")
+    neither = ProcessRecord(pid=1, command="app")
+    assert identity_complete(complete) is True
+    assert identity_complete(missing_boot) is False
+    assert identity_complete(missing_start) is False
+    assert identity_complete(neither) is False

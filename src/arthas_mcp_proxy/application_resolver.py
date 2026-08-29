@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from .errors import DomainError
 from .models import ErrorCode
+from .process_inventory import ProcessRecord
 
 
 @dataclass(frozen=True)
@@ -11,31 +12,74 @@ class ApplicationCandidate:
     command: str
     owner: str | None = None
     start_time: str | None = None
+    boot_id: str | None = None
 
     def identity_key(self) -> tuple[int, str | None]:
         return self.pid, self.start_time
 
 
-def find_java_application(lines: Iterable[str], application_name: str) -> ApplicationCandidate:
+def identity_complete(record: ApplicationCandidate | ProcessRecord) -> bool:
+    """True iff start_time and boot_id are both non-empty strings."""
+    start_time = record.start_time
+    boot_id = record.boot_id
+    return (
+        isinstance(start_time, str)
+        and start_time != ""
+        and isinstance(boot_id, str)
+        and boot_id != ""
+    )
+
+
+def _last_command_token(command: str) -> str:
+    parts = command.split()
+    return parts[-1] if parts else command
+
+
+def _matches_application(command: str, application_name: str) -> bool:
+    return application_name in _last_command_token(command)
+
+
+def _candidate_from_record(record: ProcessRecord) -> ApplicationCandidate:
+    return ApplicationCandidate(
+        pid=record.pid,
+        command=record.command,
+        owner=record.owner,
+        start_time=record.start_time,
+        boot_id=record.boot_id,
+    )
+
+
+def _parse_listing_line(line: str) -> ApplicationCandidate | None:
+    normalized = line.strip()
+    if normalized.startswith("PID ") and ":" in normalized:
+        normalized = normalized[4:].replace(":", " ", 1)
+    parts = normalized.split()
+    if len(parts) < 2:
+        return None
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        return None
+    if len(parts) >= 4:
+        return ApplicationCandidate(
+            pid=pid, owner=parts[1], start_time=parts[2], command=" ".join(parts[3:])
+        )
+    return ApplicationCandidate(pid=pid, command=" ".join(parts[1:]))
+
+
+def find_java_application(
+    sources: Iterable[str] | Iterable[ProcessRecord],
+    application_name: str,
+) -> ApplicationCandidate:
     candidates: list[ApplicationCandidate] = []
-    for line in lines:
-        normalized = line.strip()
-        if normalized.startswith("PID ") and ":" in normalized:
-            normalized = normalized[4:].replace(":", " ", 1)
-        parts = normalized.split()
-        if len(parts) >= 2 and application_name in parts[-1]:
-            try:
-                pid = int(parts[0])
-            except ValueError:
-                continue
-            if len(parts) >= 4:
-                candidates.append(
-                    ApplicationCandidate(
-                        pid=pid, owner=parts[1], start_time=parts[2], command=" ".join(parts[3:])
-                    )
-                )
-            else:
-                candidates.append(ApplicationCandidate(pid=pid, command=" ".join(parts[1:])))
+    for item in sources:
+        if isinstance(item, ProcessRecord):
+            if _matches_application(item.command, application_name):
+                candidates.append(_candidate_from_record(item))
+            continue
+        parsed = _parse_listing_line(item)
+        if parsed is not None and _matches_application(parsed.command, application_name):
+            candidates.append(parsed)
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:

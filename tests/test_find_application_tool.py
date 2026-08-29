@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arthas_mcp_proxy.process_inventory import ProcessRecord
 from arthas_mcp_proxy.server import find_java_application, mcp
 
 
@@ -42,17 +43,15 @@ async def test_find_java_application_schema_requires_session_and_application() -
 
 @pytest.mark.contract
 def test_find_java_application_returns_json_candidate() -> None:
-    """Resolves a matching process line to a JSON candidate."""
+    """Resolves a matching inventory record to a JSON candidate."""
     session = MagicMock()
     pool = MagicMock()
     pool.get_session.return_value = session
-
-    client = MagicMock()
-    client.list_java_processes.return_value = "PID 5678: com.example.OrderService"
+    record = ProcessRecord(pid=5678, command="com.example.OrderService")
 
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
-        patch("arthas_mcp_proxy.server.ArthasClient", return_value=client),
+        patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
     ):
         result = find_java_application("sess-1", "OrderService")
 
@@ -66,25 +65,30 @@ def test_find_java_application_returns_json_candidate() -> None:
 
 @pytest.mark.contract
 def test_find_java_application_passes_start_time_to_arthas_state() -> None:
-    """Resolver metadata is carried into the client used for state lookup."""
+    """Resolver metadata is carried into session state for later Arthas ops."""
     session = MagicMock()
     pool = MagicMock()
     pool.get_session.return_value = session
-
-    client = MagicMock()
-    client.list_java_processes.return_value = (
-        "5678 appuser 2026-08-01T10:00:00 com.example.OrderService"
+    record = ProcessRecord(
+        pid=5678,
+        command="com.example.OrderService",
+        owner="appuser",
+        start_time="2026-08-01T10:00:00",
+        boot_id=None,
     )
 
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
-        patch("arthas_mcp_proxy.server.ArthasClient", return_value=client) as client_class,
+        patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
     ):
         result = find_java_application("sess-1", "OrderService")
 
-    assert json.loads(result)["start_time"] == "2026-08-01T10:00:00"
+    payload = json.loads(result)
+    assert payload["start_time"] == "2026-08-01T10:00:00"
     assert session.start_time == "2026-08-01T10:00:00"
-    client_class.assert_called_once_with(session)
+    assert payload["boot_id"] is None
+    assert payload["identity_complete"] is False
+    assert "unknown-start" not in payload["handle"]
 
 
 @pytest.mark.contract
@@ -93,15 +97,17 @@ def test_find_java_application_returns_stable_jvm_handle() -> None:
     session = MagicMock(host="example.test", port=2222, username="deploy")
     pool = MagicMock()
     pool.get_session.return_value = session
-
-    client = MagicMock()
-    client.list_java_processes.return_value = (
-        "5678 appuser 2026-08-01T10:00:00 com.example.OrderService"
+    record = ProcessRecord(
+        pid=5678,
+        command="com.example.OrderService",
+        owner="appuser",
+        start_time="2026-08-01T10:00:00",
+        boot_id=None,
     )
 
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
-        patch("arthas_mcp_proxy.server.ArthasClient", return_value=client),
+        patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
     ):
         result = find_java_application("sess-1", "OrderService")
 
@@ -115,13 +121,11 @@ def test_find_java_application_maps_not_found_to_error() -> None:
     session = MagicMock()
     pool = MagicMock()
     pool.get_session.return_value = session
-
-    client = MagicMock()
-    client.list_java_processes.return_value = "PID 1234: com.example.Other"
+    record = ProcessRecord(pid=1234, command="com.example.Other")
 
     with (
         patch("arthas_mcp_proxy.server.get_connection_pool", return_value=pool),
-        patch("arthas_mcp_proxy.server.ArthasClient", return_value=client),
+        patch("arthas_mcp_proxy.server.collect_inventory_over_ssh", return_value=[record]),
     ):
         result = find_java_application("sess-1", "Missing")
 
