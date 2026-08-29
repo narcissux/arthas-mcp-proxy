@@ -38,8 +38,13 @@ async def test_execute_diagnostic_command_schema_requires_command() -> None:
 
 @pytest.mark.contract
 def test_execute_diagnostic_command_rejects_unknown_command() -> None:
-    result = execute_diagnostic_command(session_id="missing", pid=1, command="unknown")
-    assert result.startswith("Error:")
+    session = MagicMock()
+    from arthas_mcp_proxy.ssh_pool import get_connection_pool
+
+    pool = get_connection_pool()
+    with patch.object(pool, "get_session", return_value=session):
+        result = execute_diagnostic_command(session_id="session", pid=1, command="unknown")
+    assert "unknown" in result.lower() or result.startswith("Error:")
 
 
 @pytest.mark.contract

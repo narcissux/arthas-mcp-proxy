@@ -40,4 +40,7 @@ def test_thread_dump_success_remains_plain_text() -> None:
         patch.object(pool, "get_session", return_value=session),
         patch("arthas_mcp_proxy.server.ArthasClient", return_value=client),
     ):
-        assert thread_dump(session_id="session", pid=1) == "thread output"
+        raw = thread_dump(session_id="session", pid=1)
+        payload = json.loads(raw)
+        assert payload["isError"] is False
+        assert payload["structuredContent"]["data"]["output"] == "thread output"

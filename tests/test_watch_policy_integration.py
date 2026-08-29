@@ -34,16 +34,22 @@ def test_watch_method_rejects_times_outside_policy() -> None:
         )
     payload = _json_result(result)
     assert payload["structuredContent"]["error"]["code"] == "OBSERVATION_LIMIT_EXCEEDED"
+    client.execute_streaming_command.assert_not_called()
     client.watch_method.assert_not_called()
 
 
 @pytest.mark.contract
 def test_watch_method_uses_policy_for_valid_times() -> None:
     client = MagicMock()
-    client.watch_method.return_value = "watch output"
+    client.execute_streaming_command.return_value = "watch output"
     session = MagicMock()
-    policy = MagicMock()
-    policy.validate_watch_times.return_value = None
+    session.session_id = "policy-sess"
+    session.host = "10.0.0.8"
+    session.port = 22
+    session.username = "ops"
+    session.start_time = "17000"
+    session.boot_id = "boot-old"
+    policy = ObservationPolicy(max_times=5)
     with (
         patch("arthas_mcp_proxy.server.ArthasClient", return_value=client),
         patch("arthas_mcp_proxy.server._watch_policy", policy),
@@ -55,11 +61,11 @@ def test_watch_method_uses_policy_for_valid_times() -> None:
             "run",
             times=3,
         )
-    assert result == "watch output"
-    policy.validate_watch_times.assert_called_once_with(3)
-    policy.__enter__.assert_called_once_with()
-    policy.__exit__.assert_called_once()
-    client.watch_method.assert_called_once()
+    payload = _json_result(result)
+    assert payload["isError"] is False
+    assert payload["structuredContent"]["data"]["output"] == "watch output"
+    client.execute_streaming_command.assert_called_once()
+    client.watch_method.assert_not_called()
 
 
 @pytest.mark.contract
@@ -86,10 +92,15 @@ def test_watch_method_policy_error_is_structured() -> None:
 @pytest.mark.contract
 def test_watch_method_backend_error_is_structured() -> None:
     client = MagicMock()
-    client.watch_method.side_effect = TimeoutError("backend timeout")
+    client.execute_streaming_command.side_effect = TimeoutError("backend timeout")
     session = MagicMock()
-    policy = MagicMock()
-    policy.validate_watch_times.return_value = None
+    session.session_id = "policy-sess"
+    session.host = "10.0.0.8"
+    session.port = 22
+    session.username = "ops"
+    session.start_time = "17000"
+    session.boot_id = "boot-old"
+    policy = ObservationPolicy(max_times=5)
     with (
         patch("arthas_mcp_proxy.server.ArthasClient", return_value=client),
         patch("arthas_mcp_proxy.server._watch_policy", policy),
@@ -104,3 +115,4 @@ def test_watch_method_backend_error_is_structured() -> None:
     payload = _json_result(result)
     assert payload["isError"] is True
     assert payload["structuredContent"]["error"]["code"] == "COMMAND_TIMEOUT"
+    client.watch_method.assert_not_called()
