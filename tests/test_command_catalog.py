@@ -25,6 +25,9 @@ def test_safe_commands_are_registered() -> None:
         "sysenv",
         "class_search",
         "method_search",
+        "trace_method",
+        "watch_method",
+        "decompile_class",
     } <= set(COMMANDS)
 
 
@@ -46,6 +49,21 @@ def test_safe_commands_are_registered() -> None:
             "method_search",
             {"class_pattern": "com.example.Service", "method_pattern": "run"},
             "sm -d com.example.Service run",
+        ),
+        (
+            "decompile_class",
+            {"class": "com.example.Service"},
+            "jad --source-only com.example.Service",
+        ),
+        (
+            "decompile_class",
+            {"class_pattern": "com.example.Service"},
+            "jad --source-only com.example.Service",
+        ),
+        (
+            "watch_method",
+            {"class_pattern": "com.example.Service", "method_pattern": "run", "times": 3},
+            "watch com.example.Service run -n 3",
         ),
     ],
 )

@@ -39,7 +39,9 @@ class ErrorCode(str, Enum):
 class ResultMeta(BaseModel):
     request_id: str
     duration_ms: int
-    backend: Literal["ssh", "arthas_cli", "arthas_http", "arthas_ws"] | None = None
+    backend: (
+        Literal["ssh", "arthas_cli", "arthas_http", "arthas_http_long_polling", "arthas_ws"] | None
+    ) = None
     degraded: bool = False
     truncated: bool = False
     original_chars: int | None = None

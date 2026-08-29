@@ -26,10 +26,13 @@ import re
 import secrets
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
+
+from pydantic import Field
 
 if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHSession
@@ -46,7 +49,8 @@ from arthas_mcp_proxy.application_resolver import (
     identity_complete,
 )
 from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh
-from arthas_mcp_proxy.command_catalog import COMMANDS, build_command
+from arthas_mcp_proxy.arthas_http import ArthasHttpStreamingClient
+from arthas_mcp_proxy.command_catalog import COMMANDS, _token, build_command
 from arthas_mcp_proxy.cookbook import COOKBOOK
 from arthas_mcp_proxy.decorators import require_session, set_fallback_credential_getter
 from arthas_mcp_proxy.errors import DomainError, map_exception
@@ -55,9 +59,13 @@ from arthas_mcp_proxy.job_manager import ThreadPoolJobManager
 from arthas_mcp_proxy.job_serialization import serialize_job
 from arthas_mcp_proxy.job_store import JobStore, SQLiteJobStore
 from arthas_mcp_proxy.jobs import JobStatus
-from arthas_mcp_proxy.jvm_registry import get_jvm_registry
+from arthas_mcp_proxy.jvm_registry import get_jvm_registry, resolve_tool_target
 from arthas_mcp_proxy.models import ErrorCode, ErrorDetail, ResultMeta, ToolResult
-from arthas_mcp_proxy.observation_policy import ObservationPolicy
+from arthas_mcp_proxy.observation_policy import (
+    ObservationPolicy,
+    is_observation_command,
+    observation_jvm_key,
+)
 from arthas_mcp_proxy.output_limit import limit_output, paginate_output
 from arthas_mcp_proxy.process_inventory import (
     collect_inventory_over_ssh,
@@ -162,6 +170,11 @@ _job_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="diagnostic
 _job_cancel_events: dict[str, threading.Event] = {}
 _job_timeout_timers: dict[str, threading.Timer] = {}
 _job_cancel_lock = threading.Lock()
+_job_observation_leases: dict[str, tuple[object, object]] = {}
+_job_observation_lock = threading.Lock()
+_AWAIT_MS_MIN = 0
+_AWAIT_MS_MAX = 5000
+_AWAIT_MS_DEFAULT = 5000
 _EXPERT_COMMANDS = {"dashboard", "jvm", "sysprop", "sysenv", "memory", "thread", "version"}
 
 
@@ -182,16 +195,277 @@ def _validate_expert_command(command: str) -> None:
     """Allow only explicitly read-only expert commands through the fallback tool."""
     command = command.strip()
     first = re.match(r"^[A-Za-z]+(?=\s|$)", command)
+    token = first.group(0) if first is not None else ""
     if (
         any(char in command for char in ";\n\r|&$`()<>")
         or first is None
-        or first.group(0) not in _EXPERT_COMMANDS
+        or (token not in _EXPERT_COMMANDS and not is_observation_command(command))
     ):
         raise DomainError(
             ErrorCode.COMMAND_NOT_ALLOWED,
             "Command is not allowed through exec_command; use a typed diagnostic tool.",
             suggestion="Use execute_diagnostic_command for supported diagnostics.",
         )
+
+
+def _observation_limit_error(exc: ValueError) -> DomainError:
+    return DomainError(
+        code=ErrorCode.OBSERVATION_LIMIT_EXCEEDED,
+        message=str(exc),
+        phase="policy",
+        suggestion="Reduce times or retry after the observation limit window.",
+    )
+
+
+def _validate_await_ms(await_ms: object) -> int:
+    """Reject anything outside the inclusive 0..5000 MCP contract."""
+    if isinstance(await_ms, bool) or not isinstance(await_ms, int):
+        raise DomainError(
+            ErrorCode.INVALID_ARGUMENT,
+            "await_ms must be an integer between 0 and 5000 inclusive",
+        )
+    if await_ms < _AWAIT_MS_MIN or await_ms > _AWAIT_MS_MAX:
+        raise DomainError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"await_ms must be between {_AWAIT_MS_MIN} and {_AWAIT_MS_MAX} inclusive",
+        )
+    return await_ms
+
+
+def _validate_observation_tokens(
+    class_pattern: str, method_pattern: str, condition: str | None
+) -> None:
+    _token(class_pattern, "class_pattern")
+    _token(method_pattern, "method_pattern")
+    if condition is not None:
+        _token(condition, "condition")
+
+
+def _try_finish_job(
+    job_id: str,
+    status: JobStatus,
+    output: str = "",
+    error: dict[str, Any] | None = None,
+) -> bool:
+    """Compare-and-set one terminal status. False if another writer already won."""
+    try:
+        _job_store.update(job_id, status=status, output=output, error=error)
+        return True
+    except DomainError:
+        return False
+
+
+def _release_observation_lease(job_id: str) -> None:
+    with _job_observation_lock:
+        held = _job_observation_leases.pop(job_id, None)
+    if held is None:
+        return
+    key, lease = held
+    _watch_policy.release_jvm(key, lease)  # type: ignore[arg-type]
+
+
+def _live_handle_for_session(session: object, pid: int) -> str | None:
+    """Return a live registry handle for this session+pid, if one exists."""
+    host = getattr(session, "host", None)
+    port = getattr(session, "port", None)
+    username = getattr(session, "username", None)
+    if not host or port is None or not username:
+        return None
+    try:
+        live = get_jvm_registry().find_live(
+            target_key=target_key(str(host), int(port), str(username)),
+            pid=int(pid),
+        )
+    except (TypeError, ValueError):
+        return None
+    return live.handle if live is not None else None
+
+
+def _identity_quota_key(session: object | None, pid: int | None) -> str | None:
+    """Stable per-JVM identity for job quota when no minted handle exists."""
+    if session is None or pid is None:
+        return None
+    host = getattr(session, "host", None)
+    port = getattr(session, "port", None)
+    username = getattr(session, "username", None)
+    start_time = getattr(session, "start_time", None)
+    boot_id = getattr(session, "boot_id", None)
+    session_id = getattr(session, "session_id", None)
+    host_s = host if isinstance(host, str) else ""
+    username_s = username if isinstance(username, str) else ""
+    port_i = port if isinstance(port, int) and not isinstance(port, bool) else 0
+    start_s = start_time if isinstance(start_time, str) else ""
+    boot_s = boot_id if isinstance(boot_id, str) else ""
+    if host_s and username_s:
+        return f"{target_key(host_s, port_i, username_s)}|{int(pid)}|{start_s}|{boot_s}"
+    sid = session_id if isinstance(session_id, str) else ""
+    return f"{sid}|{int(pid)}|{start_s}|{boot_s}"
+
+
+_PRODUCT_BACKENDS = frozenset(
+    {
+        "ssh",
+        "arthas_cli",
+        "arthas_http",
+        ArthasHttpStreamingClient.backend_name,
+    }
+)
+
+
+def _product_backend(backend: str | None, *, fallback: str) -> str:
+    """Stamp a product Arthas backend. Never emit arthas_ws on the MCP path."""
+    if backend in _PRODUCT_BACKENDS:
+        return backend
+    return fallback
+
+
+def _observation_mcp_result(
+    *,
+    status: str,
+    summary: str,
+    data: dict[str, Any],
+    backend: str = ArthasHttpStreamingClient.backend_name,
+) -> str:
+    backend = _product_backend(backend, fallback=ArthasHttpStreamingClient.backend_name)
+    return json.dumps(
+        to_mcp_result(
+            ToolResult(
+                status=status,  # type: ignore[arg-type]
+                summary=summary,
+                data=data,
+                meta=ResultMeta(
+                    request_id=f"req-{uuid.uuid4().hex}",
+                    duration_ms=0,
+                    backend=backend,  # type: ignore[arg-type]
+                    degraded=False,
+                ),
+            )
+        )
+    )
+
+
+def _await_job(job_id: str, await_ms: int) -> Any:
+    deadline = time.monotonic() + max(0, await_ms) / 1000.0
+    while True:
+        job = _job_store.get(job_id)
+        if job.is_finished or time.monotonic() >= deadline:
+            return job
+        time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+
+
+def _run_watch_or_trace(
+    session: object,
+    pid: int,
+    command: str,
+    params: dict[str, Any],
+    await_ms: int,
+    timeout: int,
+    *,
+    success_summary: str,
+    running_summary: str,
+    max_chars: int | None = None,
+) -> str:
+    """Start a streaming diagnostic job, wait up to await_ms, keep the lease if running."""
+    await_ms = _validate_await_ms(await_ms)
+    key = observation_jvm_key(session, pid)
+    try:
+        lease = _watch_policy.acquire_jvm(key)
+    except ValueError as exc:
+        raise _observation_limit_error(exc) from exc
+    # Job quota is checked at JobStore.create (not merged with observation 3).
+    # Observation is acquired first so a 4th watch still hits OBSERVATION_LIMIT
+    # when 3 watches already run; a 4th watch after 3 start jobs hits
+    # JOB_QUOTA_EXCEEDED at create. If create fails, release the observation.
+    bound_handle = _live_handle_for_session(session, pid)
+    quota_key = bound_handle or _identity_quota_key(session, pid)
+    try:
+        job = _job_store.create(jvm_handle=bound_handle, quota_key=quota_key)
+    except DomainError:
+        _watch_policy.release_jvm(key, lease)
+        raise
+    cancel_event = threading.Event()
+    timeout_timer = threading.Timer(
+        max(1, int(timeout)), _timeout_diagnostic_job, args=(job.job_id, cancel_event)
+    )
+    with _job_cancel_lock:
+        _job_cancel_events[job.job_id] = cancel_event
+        _job_timeout_timers[job.job_id] = timeout_timer
+    with _job_observation_lock:
+        _job_observation_leases[job.job_id] = (key, lease)
+    session_id = str(getattr(session, "session_id", "") or "")
+    try:
+        _job_manager.start(
+            lambda emit, manager_cancel: _managed_diagnostic_backend(
+                job.job_id,
+                session_id,
+                int(pid),
+                command,
+                params,
+                int(timeout),
+                cancel_event,
+                manager_cancel,
+                emit,
+                bound_session=session,
+            ),
+            job_id=job.job_id,
+        )
+        timeout_timer.start()
+    except Exception:
+        timeout_timer.cancel()
+        _release_observation_lease(job.job_id)
+        raise
+    finished = _await_job(job.job_id, await_ms)
+    if not finished.is_finished:
+        return _observation_mcp_result(
+            status="running",
+            summary=running_summary,
+            data={"job_id": finished.job_id, "status": "running"},
+        )
+    if finished.status is JobStatus.SUCCEEDED:
+        output = finished.output
+        if max_chars is not None:
+            output = limit_output(output, max_chars).text
+        return _observation_mcp_result(
+            status="success",
+            summary=success_summary,
+            data={"output": output, "job_id": finished.job_id, "status": "success"},
+        )
+    if finished.status is JobStatus.CANCELLED:
+        return _observation_mcp_result(
+            status="success",
+            summary="Observation cancelled",
+            data={
+                "job_id": finished.job_id,
+                "status": "cancelled",
+                "output": finished.output,
+            },
+        )
+    error = finished.error or {
+        "code": ErrorCode.INTERNAL_ERROR.value,
+        "message": finished.output or "Observation failed",
+    }
+    code = error.get("code", ErrorCode.INTERNAL_ERROR.value)
+    try:
+        mapped = ErrorCode(code)
+    except ValueError:
+        mapped = ErrorCode.INTERNAL_ERROR
+    return json.dumps(
+        to_mcp_result(
+            ToolResult(
+                status="error",
+                summary=str(error.get("message", "Observation failed")),
+                error=ErrorDetail(
+                    code=mapped,
+                    message=str(error.get("message", "Observation failed")),
+                ),
+                meta=ResultMeta(
+                    request_id=f"req-{uuid.uuid4().hex}",
+                    duration_ms=0,
+                    backend=ArthasHttpStreamingClient.backend_name,
+                ),
+            )
+        )
+    )
 
 
 def _store_session(session_id: str, host: str, port: int, username: str) -> None:
@@ -250,6 +524,28 @@ def _dump_params(tool_name: str, kwargs: dict[str, object]) -> None:
     logger.info("[PARAMS] %s: %s", tool_name, safe)
 
 
+def _mcp_short_success(client: ArthasClient, output: str, summary: str) -> str:
+    """Always wrap a short command as MCP JSON. Coerce unknown backend to a string."""
+    backend = _product_backend(getattr(client, "last_backend", None), fallback="arthas_cli")
+    identity = getattr(client, "last_identity_complete", None)
+    return json.dumps(
+        to_mcp_result(
+            ToolResult(
+                status="success",
+                summary=summary,
+                data={"output": output},
+                meta=ResultMeta(
+                    request_id=f"req-{uuid.uuid4().hex}",
+                    duration_ms=0,
+                    backend=backend,
+                    degraded=bool(getattr(client, "last_backend_degraded", False)),
+                    identity_complete=identity if isinstance(identity, bool) else None,
+                ),
+            )
+        )
+    )
+
+
 def _structured_error(code: ErrorCode, message: str, *, suggestion: str | None = None) -> str:
     result = ToolResult(
         status="error",
@@ -270,41 +566,76 @@ def start_diagnostic_job(
     session_id: str | None = None,
     pid: int | None = None,
     timeout: int = 60,
+    jvm_handle: str | None = None,
 ) -> str:
-    """Start a catalog-backed diagnostic job."""
+    """Start a catalog-backed diagnostic job bound to one JVM.
+
+    Requires jvm_handle from find_java_application, or session_id and pid
+    together. session_id and pid are deprecated but still accepted during
+    the migration window.
+    """
     try:
-        if (session_id is None) != (pid is None):
-            raise ValueError("session_id and pid must be supplied together")
-        rendered = None if session_id is not None else build_command(command, params or {})
-        job = _job_store.create()
-        if session_id is None:
-            assert rendered is not None
-            limited = limit_output(rendered, _JOB_OUTPUT_MAX_CHARS)
-            job = _job_store.update(job.job_id, status=JobStatus.SUCCEEDED, output=limited.text)
-        else:
-            cancel_event = threading.Event()
-            timeout_timer = threading.Timer(
-                max(0, int(timeout)), _timeout_diagnostic_job, args=(job.job_id, cancel_event)
-            )
-            with _job_cancel_lock:
-                _job_cancel_events[job.job_id] = cancel_event
-                _job_timeout_timers[job.job_id] = timeout_timer
-            _job_manager.start(
-                lambda emit, manager_cancel: _managed_diagnostic_backend(
-                    job.job_id,
-                    session_id,
-                    int(pid or 0),
-                    command,
-                    params or {},
-                    int(timeout),
-                    cancel_event,
-                    manager_cancel,
-                    emit,
+        bound_handle = jvm_handle if isinstance(jvm_handle, str) and jvm_handle else None
+        has_session_pid = session_id is not None and pid is not None
+        session: object | None = None
+        if not bound_handle and not has_session_pid:
+            raise DomainError(
+                ErrorCode.INVALID_ARGUMENT,
+                "jvm_handle or session_id+pid is required",
+                phase="resolve",
+                suggestion=(
+                    "Pass jvm_handle from find_java_application, or session_id and pid together."
                 ),
-                job_id=job.job_id,
             )
-            timeout_timer.start()
+        if bound_handle:
+            session, resolved_pid = resolve_tool_target(
+                jvm_handle=bound_handle,
+                session_id=session_id,
+                pid=pid,
+                pool=get_connection_pool(),
+                fallback_getter=_get_session_credentials,
+            )
+            session_id = session.session_id
+            pid = resolved_pid
+        elif (session_id is None) != (pid is None):
+            raise DomainError(
+                ErrorCode.INVALID_ARGUMENT,
+                "session_id and pid must be supplied together",
+                phase="resolve",
+            )
+        else:
+            session = get_connection_pool().get_session(str(session_id))
+            if session is not None:
+                bound_handle = _live_handle_for_session(session, int(pid))
+        # Reject unknown commands before create so we never leave an orphan job.
+        build_command(command, params or {})
+        quota_key = bound_handle or _identity_quota_key(session, pid)
+        job = _job_store.create(jvm_handle=bound_handle, quota_key=quota_key)
+        cancel_event = threading.Event()
+        timeout_timer = threading.Timer(
+            max(0, int(timeout)), _timeout_diagnostic_job, args=(job.job_id, cancel_event)
+        )
+        with _job_cancel_lock:
+            _job_cancel_events[job.job_id] = cancel_event
+            _job_timeout_timers[job.job_id] = timeout_timer
+        _job_manager.start(
+            lambda emit, manager_cancel: _managed_diagnostic_backend(
+                job.job_id,
+                str(session_id),
+                int(pid or 0),
+                command,
+                params or {},
+                int(timeout),
+                cancel_event,
+                manager_cancel,
+                emit,
+            ),
+            job_id=job.job_id,
+        )
+        timeout_timer.start()
         return serialize_job(job)
+    except DomainError as exc:
+        return _structured_error(exc.code, exc.message, suggestion=exc.suggestion)
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -319,12 +650,16 @@ def _managed_diagnostic_backend(
     cancel_event: threading.Event,
     manager_cancel: threading.Event,
     emit: Any,
+    bound_session: object | None = None,
 ) -> str:
     """Execute the typed MCP command and bridge its bounded result to streaming."""
     try:
         if cancel_event.is_set() or manager_cancel.is_set():
+            _try_finish_job(job_id, JobStatus.CANCELLED)
             return ""
-        session = get_connection_pool().get_session(session_id)
+        session = bound_session
+        if session is None:
+            session = get_connection_pool().get_session(session_id)
         if session is None:
             raise DomainError(ErrorCode.SESSION_NOT_FOUND, "Session not found or expired")
         client = ArthasClient(session)
@@ -339,12 +674,21 @@ def _managed_diagnostic_backend(
             result_text = client.execute_streaming_command(
                 pid, rendered, forward_chunk, manager_cancel, timeout
             )
-            if cancel_event.is_set() or manager_cancel.is_set():
-                return ""
             result_text = result_text or "\n".join(chunks)
+            if cancel_event.is_set() or manager_cancel.is_set():
+                limited = limit_output(result_text, _JOB_OUTPUT_MAX_CHARS)
+                _try_finish_job(job_id, JobStatus.CANCELLED, output=limited.text)
+                return limited.text
         else:
+            if manager_cancel.is_set():
+                cancel_event.set()
             output = typed_command_json(
-                client, pid=pid, command=command, params=params, timeout=timeout
+                client,
+                pid=pid,
+                command=command,
+                params=params,
+                timeout=timeout,
+                cancel=cancel_event,
             )
             payload = json.loads(output)
             structured = payload.get("structuredContent", {})
@@ -358,21 +702,23 @@ def _managed_diagnostic_backend(
                 )
             result_text = str(structured.get("data", {}).get("output", output))
         result = limit_output(result_text, _JOB_OUTPUT_MAX_CHARS)
-        _job_store.update(job_id, status=JobStatus.SUCCEEDED, output=result.text)
-        emit(result.text)
+        if _try_finish_job(job_id, JobStatus.SUCCEEDED, output=result.text):
+            emit(result.text)
         return result.text
     except Exception as exc:
-        error = map_exception(exc)
-        with suppress(DomainError):
-            _job_store.update(
+        if cancel_event.is_set() or manager_cancel.is_set():
+            _try_finish_job(job_id, JobStatus.CANCELLED)
+        else:
+            error = map_exception(exc)
+            _try_finish_job(
                 job_id,
-                status=JobStatus.FAILED,
+                JobStatus.FAILED,
                 output=error.message,
                 error=error.model_dump(mode="json"),
             )
-
         raise
     finally:
+        _release_observation_lease(job_id)
         with _job_cancel_lock:
             _job_cancel_events.pop(job_id, None)
             timer = _job_timeout_timers.pop(job_id, None)
@@ -464,16 +810,24 @@ def get_diagnostic_job(job_id: str, cursor: str | None = None, max_chars: int = 
         payload["output"] = page.text
         payload["next_cursor"] = page.next_cursor
         return json.dumps(payload)
+    except DomainError as exc:
+        if exc.code is ErrorCode.OUTPUT_CURSOR_INVALID:
+            return _structured_error(exc.code, exc.message, suggestion=exc.suggestion)
+        return f"Error: {exc}"
     except Exception as exc:
         return f"Error: {exc}"
 
 
 @mcp.tool()
-def list_diagnostic_jobs(status: str | None = None, limit: int = 50) -> str:
-    """List recent diagnostic jobs, optionally filtered by lifecycle status."""
+def list_diagnostic_jobs(
+    status: str | None = None,
+    limit: int = 50,
+    jvm_handle: str | None = None,
+) -> str:
+    """List recent diagnostic jobs, optionally filtered by status or jvm_handle."""
     try:
         parsed_status = JobStatus(status.upper()) if status else None
-        jobs = _job_store.list(status=parsed_status, limit=int(limit))
+        jobs = _job_store.list(status=parsed_status, limit=int(limit), jvm_handle=jvm_handle)
         return json.dumps({"jobs": [json.loads(serialize_job(job)) for job in jobs]})
     except Exception as exc:
         return f"Error: {exc}"
@@ -489,12 +843,18 @@ def cancel_diagnostic_job(job_id: str) -> str:
         with suppress(DomainError):
             _job_store.cancel(job_id)
         return serialize_job(_job_store.get(job_id))
+    except DomainError as exc:
+        with suppress(DomainError):
+            return serialize_job(_job_store.get(job_id))
+        return _structured_error(exc.code, exc.message)
     except Exception as exc:
+        with suppress(Exception):
+            return serialize_job(_job_store.get(job_id))
         return f"Error: {exc}"
 
 
 @mcp.tool()
-@require_session()
+@require_session(accept_jvm_handle=True, structured_errors=True)
 def execute_diagnostic_command(
     session: object,
     pid: int,
@@ -502,7 +862,11 @@ def execute_diagnostic_command(
     params: dict[str, Any] | None = None,
     timeout: int = 60,
 ) -> str:
-    """Execute a catalog-backed diagnostic command on a target JVM."""
+    """Execute a catalog-backed diagnostic command on a target JVM.
+
+    Prefer jvm_handle from find_java_application. session_id and pid are
+    deprecated but still accepted during the migration window.
+    """
     try:
         return typed_command_json(
             ArthasClient(cast("SSHSession", session)),
@@ -682,9 +1046,13 @@ def find_java_application(session_id: str, application_name: str) -> str:
 
 
 @mcp.tool()
-@require_session(pool_getter=get_connection_pool, structured_errors=True)
-def thread_dump(session: object, pid: int, top_n: int = 20) -> str:
-    """Get thread dump (top N threads by CPU usage) for a Java process."""
+@require_session(pool_getter=get_connection_pool, structured_errors=True, accept_jvm_handle=True)
+def thread_dump(session: object, pid: int | None = None, top_n: int = 20) -> str:
+    """Get thread dump (top N threads by CPU usage) for a Java process.
+
+    Prefer jvm_handle from find_java_application. session_id and pid are
+    deprecated but still accepted during the migration window.
+    """
     if isinstance(pid, str):
         pid = int(pid)
     if isinstance(top_n, str):
@@ -692,7 +1060,7 @@ def thread_dump(session: object, pid: int, top_n: int = 20) -> str:
 
     try:
         client = ArthasClient(session)  # type: ignore[arg-type]
-        return client.thread_dump(pid=pid, top_n=top_n)
+        return _mcp_short_success(client, client.thread_dump(pid=pid, top_n=top_n), "Thread dump")
     except Exception as e:
         logger.error("thread_dump failed for PID %d: %s", pid, e)
         return json.dumps(
@@ -708,15 +1076,19 @@ def thread_dump(session: object, pid: int, top_n: int = 20) -> str:
 
 
 @mcp.tool()
-@require_session(pool_getter=get_connection_pool, structured_errors=True)
-def heap_info(session: object, pid: int) -> str:
-    """Get heap and memory dashboard for a Java process."""
+@require_session(pool_getter=get_connection_pool, structured_errors=True, accept_jvm_handle=True)
+def heap_info(session: object, pid: int | None = None) -> str:
+    """Get heap and memory dashboard for a Java process.
+
+    Prefer jvm_handle from find_java_application. session_id and pid are
+    deprecated but still accepted during the migration window.
+    """
     if isinstance(pid, str):
         pid = int(pid)
 
     try:
         client = ArthasClient(session)  # type: ignore[arg-type]
-        return client.heap_info(pid=pid)
+        return _mcp_short_success(client, client.heap_info(pid=pid), "Heap info")
     except Exception as e:
         logger.error("heap_info failed for PID %d: %s", pid, e)
         return json.dumps(
@@ -732,7 +1104,7 @@ def heap_info(session: object, pid: int) -> str:
 
 
 @mcp.tool()
-@require_session(structured_errors=True)
+@require_session(structured_errors=True, accept_jvm_handle=True)
 def watch_method(
     session: object,
     pid: int,
@@ -742,8 +1114,13 @@ def watch_method(
     watch_return: bool = True,
     condition: str | None = None,
     times: int = 5,
+    await_ms: Annotated[int, Field(ge=0, le=5000)] = 5000,
 ) -> str:
-    """Watch method execution - monitor input parameters and/or return values."""
+    """Watch method execution - wait await_ms then return a job_id if still running.
+
+    Prefer jvm_handle from find_java_application. session_id and pid are
+    deprecated but still accepted during the migration window.
+    """
     if isinstance(pid, str):
         pid = int(pid)
     if isinstance(times, str):
@@ -754,26 +1131,29 @@ def watch_method(
         watch_return = watch_return.lower() in ("true", "1", "yes")
 
     try:
+        _validate_await_ms(await_ms)
+        _validate_observation_tokens(class_pattern, method_pattern, condition)
         try:
             _watch_policy.validate_watch_times(times)
         except ValueError as exc:
-            raise DomainError(
-                code=ErrorCode.OBSERVATION_LIMIT_EXCEEDED,
-                message=str(exc),
-                phase="policy",
-                suggestion="Reduce times or retry after the observation limit window.",
-            ) from exc
-        with _watch_policy:
-            client = ArthasClient(session)  # type: ignore[arg-type]
-            return client.watch_method(
-                pid=pid,
-                class_pattern=class_pattern,
-                method_pattern=method_pattern,
-                watch_params=watch_params,
-                watch_return=watch_return,
-                condition=condition,
-                times=times,
-            )
+            raise _observation_limit_error(exc) from exc
+        params: dict[str, Any] = {
+            "class_pattern": class_pattern,
+            "method_pattern": method_pattern,
+            "times": times,
+        }
+        if condition is not None:
+            params["condition"] = condition
+        return _run_watch_or_trace(
+            session,
+            pid,
+            "watch_method",
+            params,
+            await_ms,
+            timeout=int(_watch_policy.ttl_seconds),
+            success_summary="Watch completed",
+            running_summary="Watch still running",
+        )
     except Exception as e:
         logger.error("watch_method failed: %s", e)
         error = map_exception(e)
@@ -790,7 +1170,7 @@ def watch_method(
 
 
 @mcp.tool()
-@require_session(structured_errors=True)
+@require_session(structured_errors=True, accept_jvm_handle=True)
 def trace_method(
     session: object,
     pid: int,
@@ -801,25 +1181,43 @@ def trace_method(
     concurrency: int = 1,
     ttl: int = 60,
     max_chars: int = 16_384,
+    await_ms: Annotated[int, Field(ge=0, le=5000)] = 5000,
 ) -> str:
-    """Run real Arthas trace with bounded observations and output."""
+    """Trace method execution - wait await_ms then return a job_id if still running.
+
+    Prefer jvm_handle from find_java_application. session_id and pid are
+    deprecated but still accepted during the migration window.
+    """
     try:
         pid, times, concurrency, ttl, max_chars = map(
             int, (pid, times, concurrency, ttl, max_chars)
         )
         if max_chars < 0:
             raise ValueError("max_chars must be non-negative")
+        _validate_await_ms(await_ms)
+        _validate_observation_tokens(class_pattern, method_pattern, condition)
         try:
             _watch_policy.validate_trace(times, concurrency, ttl)
         except ValueError as exc:
-            raise DomainError(
-                ErrorCode.OBSERVATION_LIMIT_EXCEEDED, str(exc), phase="policy"
-            ) from exc
-        with _watch_policy:
-            output = ArthasClient(cast("SSHSession", session)).trace_method(
-                pid, class_pattern, method_pattern, condition, times, ttl
-            )
-        return limit_output(output, max_chars).text
+            raise _observation_limit_error(exc) from exc
+        params: dict[str, Any] = {
+            "class_pattern": class_pattern,
+            "method_pattern": method_pattern,
+            "times": times,
+        }
+        if condition is not None:
+            params["condition"] = condition
+        return _run_watch_or_trace(
+            session,
+            pid,
+            "trace_method",
+            params,
+            await_ms,
+            timeout=ttl,
+            success_summary="Trace completed",
+            running_summary="Trace still running",
+            max_chars=max_chars,
+        )
     except Exception as exc:
         logger.error("trace_method failed: %s", exc)
         return json.dumps(
@@ -837,60 +1235,21 @@ def trace_method(
 @mcp.tool()
 @require_session(structured_errors=True)
 def exec_command(session: object, pid: int, command: str, timeout: int = 60) -> str:
-    """
-    Execute an explicitly allowlisted read-only expert command on the target JVM.
+    """Execute an explicitly allowlisted read-only expert command on the target JVM.
 
-    This is a constrained executor for the explicitly allowlisted read-only
-    expert commands; it is not a complete Arthas command suite.
+    Runtime first-token allowlist (exactly these 7): dashboard, jvm, sysprop,
+    sysenv, memory, thread, version. This is not a complete Arthas command suite.
+    Observation exception: exec_command still accepts watch/trace first tokens
+    (is_observation_command) so they cannot bypass the per-JVM cap. Prefer the
+    MCP observation tools. Other verbs remain COMMAND_NOT_ALLOWED.
 
-    --- JVM & Runtime Diagnostics ---
-    dashboard -n 1              JVM overview: threads, memory, GC, runtime
-    jvm                         JVM runtime info, classpath, arguments
+    dashboard -n 1              One JVM overview sample
+    jvm                         JVM runtime info
     sysprop [pattern]           System properties
     sysenv [key]                Environment variables
-    vmoption [key] [value]      JVM options (read/set)
     memory                      Memory pool details
-    perfcounter [name]          JVM performance counters
-    mbean [name]                MBean information
-    getstatic class field       Read static field value
-
-    --- Thread Diagnostics ---
-    thread -n 20                Top 20 threads by CPU
-    thread <tid>                Thread detail and stack trace
-    thread -b                   Detect deadlocks
-    thread --state RUNNABLE     Filter by state
-
-    --- Class & Bytecode ---
-    sc -d com.example.Service   Search class info
-    sm -d com.example.Service   Search method info
-    jad --source-only Class     Decompile to Java source
-    classloader -t              ClassLoader tree
-    dump -d /tmp Class          Dump class bytecode
-    redefine /tmp/Class.class   Hot-reload (emergency only)
-
-    --- Method Tracing ---
-    trace Class method '#cost>100' -n 5    Execution trace with timing
-    stack Class method -n 5                Call stack
-    monitor -c 5 Class method -n 3         QPS/RT monitor
-    watch Class method '{params,returnObj}' -n 5 -x 3
-    tt -t Class method -n 10               Record invocations
-
-    --- Heap & Profiler ---
-    heapdump /tmp/heap.hprof    Generate heap dump
-    profiler start              Start CPU profiling
-    profiler stop --file /tmp/flame.html   Flame graph
-    profiler start --event alloc           Memory allocation profile
-
-    --- Management ---
+    thread -n 20                Top threads by CPU
     version                     Arthas agent version
-    help                        Show help
-    stop                        Detach agent
-
-    Examples:
-        trace com.order.Service createOrder '#cost>500' -n 10
-        heapdump /tmp/heap.hprof
-        jad --source-only com.order.ServiceImpl
-        monitor -c 60 com.api.Controller query -n 3
     """
     if isinstance(pid, str):
         pid = int(pid)
@@ -899,6 +1258,13 @@ def exec_command(session: object, pid: int, command: str, timeout: int = 60) -> 
 
     try:
         _validate_expert_command(command)
+        if is_observation_command(command):
+            try:
+                with _watch_policy.for_jvm(observation_jvm_key(session, pid)):
+                    client = ArthasClient(session)  # type: ignore[arg-type]
+                    return client.exec_command(pid=pid, command=command, timeout=timeout)
+            except ValueError as exc:
+                raise _observation_limit_error(exc) from exc
         client = ArthasClient(session)  # type: ignore[arg-type]
         return client.exec_command(pid=pid, command=command, timeout=timeout)
     except Exception as e:
@@ -934,6 +1300,50 @@ def install_arthas(session: object, install_type: str = "auto") -> str:
                 )
             )
         )
+
+
+@mcp.tool()
+def prepare_arthas(jvm_handle: str) -> str:
+    """Detect or attach Arthas for a JVM handle and verify it with version.
+
+    Resolves ``jvm_handle`` from find_java_application, checks live identity,
+    reuses an existing Agent when present, attaches only if needed, then
+    requires a successful Arthas ``version`` probe before returning ready.
+    """
+    try:
+        session, pid = resolve_tool_target(
+            jvm_handle=jvm_handle,
+            session_id=None,
+            pid=None,
+            pool=get_connection_pool(),
+            fallback_getter=_get_session_credentials,
+        )
+        prepared = ArthasClient(session).prepare(pid)
+        return json.dumps(
+            to_mcp_result(
+                ToolResult(
+                    status="success",
+                    summary=(
+                        f"Arthas ready (origin={prepared.origin.value}) "
+                        f"on telnet {prepared.telnet_port}."
+                    ),
+                    data={
+                        "origin": prepared.origin.value,
+                        "telnet_port": prepared.telnet_port,
+                        "http_port": prepared.http_port,
+                        "arthas_version": prepared.arthas_version,
+                    },
+                    meta=ResultMeta(request_id=f"req-{uuid.uuid4().hex}", duration_ms=0),
+                )
+            )
+        )
+    except DomainError as exc:
+        logger.error("prepare_arthas failed: %s", exc)
+        return _structured_error(exc.code, exc.message, suggestion=exc.suggestion)
+    except Exception as exc:
+        logger.error("prepare_arthas failed: %s", exc)
+        error = map_exception(exc)
+        return _structured_error(error.code, error.message, suggestion=error.suggestion)
 
 
 @mcp.tool()

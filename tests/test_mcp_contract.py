@@ -19,6 +19,7 @@ async def test_tool_names():
             "trace_method",
             "exec_command",
             "install_arthas",
+            "prepare_arthas",
             "disconnect_ssh",
             "execute_diagnostic_command",
             "get_diagnostic_job",

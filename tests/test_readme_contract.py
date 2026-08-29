@@ -12,12 +12,26 @@ from pathlib import Path
 import pytest
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
+DESIGN_PATH = (
+    README_PATH.parent
+    / "docs"
+    / "plans"
+    / "2026-08-01-arthas-mcp-ai-diagnostics-implementation-design.md"
+)
+_D_I_BANNED_SHIP_CLAIMS = (
+    "B/C 已完成",
+    "计划内路径已完成 focused contract 验收",
+    "计划内路径：已完成 focused contract 验收",
+    "focused contract passed",
+    "计划内已实现路径已完成 focused contract 验收",
+)
 
 # Full registry as registered in server.py (mcp.list_tools()).
 ALL_TOOLS = [
     "connect_ssh",
     "list_java_processes",
     "find_java_application",
+    "prepare_arthas",
     "thread_dump",
     "heap_info",
     "watch_method",
@@ -158,3 +172,16 @@ def test_readme_describes_jobs_as_process_local_not_durable() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     assert "process-local in-memory state" in readme
     assert "not durable storage or a durable API" in readme
+
+
+@pytest.mark.contract
+def test_readme_does_not_lock_bc_or_focused_contract_as_shipped() -> None:
+    """D-i: README and design.md must not lock B/C or focused contract as shipped."""
+    readme = README_PATH.read_text(encoding="utf-8")
+    design = DESIGN_PATH.read_text(encoding="utf-8")
+    for document in (readme, design):
+        for banned in _D_I_BANNED_SHIP_CLAIMS:
+            assert banned not in document
+    assert "heapdump" not in readme
+    assert "redefine" not in readme
+    assert "profiler" not in readme

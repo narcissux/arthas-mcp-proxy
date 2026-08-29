@@ -25,7 +25,7 @@ AI 只需 SSH 目标和应用名；proxy 负责定位 JVM、按需准备 Arthas�
 1. **窄而稳的诊断面**：只收录明确只读、短命令、结构化参数的 catalog；不是完整 Arthas 套件。`exec_command` 不是任意命令执行器。
 2. **AI 可编排**：应用名 → JVM 候选；typed tools + 结构化错误；async job（创建/查询/取消/列表/配额/TTL）；有界输出 + 签名 job-bound opaque cursor 分页。
 3. **传输兼容**：stdio / SSE / Streamable HTTP 都要有协议级 E2E，而不是只测 Python 类。
-4. **低侵入生命周期**：HTTP `/api` 为主；提交前连接失败才对安全只读命令 fallback CLI（结果标记 degraded）；长命令用 HTTP long-polling（`init_session` / `async_exec` / `pull_results`）。官方 Arthas **没有** WebSocket 命令协议，不要再去做 Arthas WebSocket backend。
+4. **低侵入生命周期**：HTTP `/api` 为主；提交前连接失败才 fallback CLI 还不是已完成的路径；长命令用 HTTP long-polling（`init_session` / `async_exec` / `pull_results`）。官方 Arthas **没有** WebSocket 命令协议，不要再去做 Arthas WebSocket backend。
 5. **安全默认值 ≠ 完整安全产品**：loopback、DNS rebinding、allowlist、脱敏。不要写成完整认证/RBAC/多租户。
 
 ### 改了什么（相对 `9191aa8`）
@@ -51,7 +51,7 @@ AI 只需 SSH 目标和应用名；proxy 负责定位 JVM、按需准备 Arthas�
 **既有文件增强：** `server.py`（MCP tools / job 接入 / transport）、`arthas_client.py`（HTTP 路径、PID 身份）、`ssh_pool.py`（多目标、清理竞态）、`decorators.py`（错误契约）、测试镜像与 compose、`pyproject.toml`（`mcp>=1.29,<2`，mypy 钉 `1.11.2`）。
 
 **Catalog 当前命令（有意保持小）：**  
-`thread_dump`, `heap_info`, `deadlock`, `top_cpu`, `jvm`, `dashboard`, `memory`, `version`, `sysprop`, `sysenv`, `class_search`, `method_search`, `trace_method`。
+`thread_dump`, `heap_info`, `deadlock`, `top_cpu`, `jvm`, `dashboard`, `memory`, `version`, `sysprop`, `sysenv`, `class_search`, `method_search`, `trace_method`, `watch_method`, `decompile_class`。
 
 **Job 存储：** 默认仍是进程内内存。设置 `ARTHAS_JOB_STORE_SQLITE=/path/to/jobs.sqlite3` 后启用标准库 SQLite MVP：已完成 job 可跨重启恢复；启动时发现仍为 `RUNNING` 的 job 会标 `FAILED` + `JOB_RESTARTED`。单实例 only，无自动重跑、无分布式协调、不是生产级 durable observability。
 
@@ -74,7 +74,7 @@ Fixture / 集成证据（RED→GREEN，**不是**完整产品能力声明）：
 | Docker `real_jvm` | `21 passed` | 真 SSH/JVM/Arthas，含 lifecycle cleanup |
 | Docker multi-target | `1 passed` | 两个真实 target 发现/诊断隔离 |
 | PID replacement | `1 passed` | 同 PID、新进程身份拒绝 |
-| HTTP long-polling / interrupt | focused contract passed | 流式输出、取消 interrupt、session 清理 |
+| HTTP long-polling / interrupt | unit/contract coverage; leftover live docker | 流式输出、取消 interrupt、session 清理 |
 | MCP job `server→manager` | contract covered | start/get/cancel 走 manager-backed job |
 | stdio / SSE / Streamable HTTP | protocol E2E | list/call 生命周期 |
 
@@ -84,7 +84,7 @@ Fixture / 集成证据（RED→GREEN，**不是**完整产品能力声明）：
 
 ### 进度如何
 
-**计划内路径：已完成 focused contract 验收。** 设计文档不再是待办清单，而是契约/回归记录。真实 MCP job 集成已接入 `server→manager`。官方 Arthas 没有 WebSocket 命令协议；HTTP long-polling 不是待完成的 WebSocket backend。
+**当前事实（以 `tools/list` 与 leftover live Docker 为准，不是 GitHub shipped）：** MCP 已注册工具见 Available Tools；本地 unit/contract 覆盖 find+handle、`prepare_arthas`、`await_ms`、job 绑 JVM。仍 leftover、未标 shipped 的 live Docker：C2-i 真 HTTP `/api`、C3-l/m Docker watch/trace、B6 e2e 杀进程同 pid 重启。不要把 B/C 写成已完成产品事实。设计文档是契约/回归记录。真实 MCP job 集成已接入 `server→manager`。官方 Arthas 没有 WebSocket 命令协议；HTTP long-polling 不是待完成的 WebSocket backend。
 
 默认 job 与输出是 process-local in-memory state，not durable storage or a durable API。SQLite 仅在显式环境变量下作为单实例 MVP。
 
@@ -156,18 +156,19 @@ python3 -m arthas_mcp_proxy --transport sse --port 8000
 | `connect_ssh` | Establish SSH connection to target server |
 | `list_java_processes` | List Java processes with Arthas status |
 | `find_java_application` | Resolve an application name to a JVM candidate |
+| `prepare_arthas` | Attach or reuse Arthas on a JVM handle and return origin + version |
 | `thread_dump` | Thread dump (top N by CPU) |
 | `heap_info` | Memory dashboard |
-| `watch_method` | Watch method params/return values |
-| `trace_method` | Trace method execution with governed observation limits |
+| `watch_method` | Watch method params/return values; waits `await_ms` (default 5000) then returns `job_id` if still running |
+| `trace_method` | Trace method execution; waits `await_ms` (default 5000) then returns `job_id` if still running |
 | `exec_command` | Execute the explicitly allowlisted read-only expert commands |
 | `install_arthas` | Install Arthas on target server |
 | `disconnect_ssh` | Disconnect and release resources |
 | `execute_diagnostic_command` | Render a safe catalog-backed diagnostic command |
-| `start_diagnostic_job` | Create a catalog-backed diagnostic job |
+| `start_diagnostic_job` | Create a catalog-backed diagnostic job; requires `jvm_handle` or `session_id`+`pid` |
 | `get_diagnostic_job` | Read diagnostic job status and output |
 | `cancel_diagnostic_job` | Cancel a running diagnostic job |
-| `list_diagnostic_jobs` | List diagnostic jobs by status and limit |
+| `list_diagnostic_jobs` | List diagnostic jobs by status, limit, or `jvm_handle` |
 
 ### Cookbook prompts
 
@@ -183,12 +184,14 @@ Pagination uses signed, job-bound opaque cursors (`ARTHAS_MCP_CURSOR_SECRET` opt
 
 ## HTTP / lifecycle notes
 
-- **HTTP / CLI fallback** — safe read-only short commands use Arthas `/api`; one CLI fallback only if HTTP fails **before submission**; result is marked degraded.
+- **HTTP / CLI fallback** — Arthas HTTP is `curl` to `127.0.0.1` (loopback) inside the existing SSH session. The proxy does not open a local forwarded port. Safe read-only short commands use `/api`. CLI is used only when HTTP cannot accept the request (for example connection refused). A command the HTTP API already accepted is not retried on the CLI.
 - **Long-running commands** — HTTP long-polling (`init_session` / `async_exec` / `pull_results`). Cancellation sends `interrupt_job` and closes the session.
 - **PID replacement** — identity includes start time.
 - **Authorized lifecycle cleanup** — only proxy-owned, expired Arthas instances; remote stop only via explicit authorized callback.
 
 The standalone WebSocket job-manager contract is a generic transport contract, **not** an Arthas WebSocket integration.
+
+`start_diagnostic_job` requires `jvm_handle` (from `find_java_application`) or deprecated `session_id`+`pid` together; it cannot succeed by only rendering a catalog command. `list_diagnostic_jobs` can filter by `jvm_handle`. `/jobs/{id}/stream` is the **proxy** job event stream (JSON output/terminal events). It is not an Arthas command channel, does not open a local forwarded port, and is not an Arthas WebSocket.
 
 ## Development
 

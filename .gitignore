@@ -42,3 +42,6 @@ packages/*.zip
 
 # Environment
 .env
+
+# Logs
+*.log

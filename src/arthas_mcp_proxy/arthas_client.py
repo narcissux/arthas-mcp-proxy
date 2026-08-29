@@ -38,8 +38,16 @@ if TYPE_CHECKING:
     from arthas_mcp_proxy.ssh_pool import SSHSession
 
 from .application_resolver import identity_complete, validate_process_identity
-from .arthas_http import ArthasHttpClient, ArthasHttpStreamingClient
-from .arthas_lifecycle import ArthasInstance, ArthasInstanceRegistry, ArthasOrigin
+from .arthas_http import ArthasHttpClient, ArthasHttpError, ArthasHttpStreamingClient
+from .arthas_lifecycle import (
+    ArthasInstance,
+    ArthasInstanceRegistry,
+    ArthasOrigin,
+    PreparedArthas,
+)
+from .errors import DomainError
+from .models import ErrorCode
+from .observation_policy import is_observation_command
 from .process_inventory import collect_inventory_over_ssh
 from .target_state import TargetIdentity
 
@@ -264,14 +272,8 @@ def _get_java_home(session: SSHSession, owner: str | None = None) -> str:
     return ""
 
 
-def _detect_arthas_port(session: SSHSession, pid: int, owner: str | None = None) -> int | None:
-    """Detect Arthas telnet port via ss -tlnp (with sudo for cross-user)."""
-    ss_cmd = "sudo ss -tlnp" if owner else "ss -tlnp"
-    cmd = f"{ss_cmd} 2>/dev/null | grep 'pid={pid},'"
-    stdout, _, rc = _exec_ssh(session, cmd, timeout=10, sudo_user=None if owner else None)
-    if rc != 0 or not stdout.strip():
-        return None
-
+def _parse_ss_listen_ports(stdout: str) -> list[int]:
+    """Extract unique listen ports from ``ss -tlnp`` output."""
     patterns = [
         r"127\.0\.0\.1:(\d+)",
         r"\[::ffff:127\.0\.0\.1\]:(\d+)",
@@ -288,11 +290,51 @@ def _detect_arthas_port(session: SSHSession, pid: int, owner: str | None = None)
                 if m:
                     ports_found.append(m.group(1))
 
-    for p in ports_found:
-        p_int = int(p)
-        if p_int < 8000:
-            logger.debug("[PORT-DETECT] PID %d -> port %d", pid, p_int)
-            return p_int
+    seen: set[int] = set()
+    ports: list[int] = []
+    for raw in ports_found:
+        port = int(raw)
+        if port not in seen:
+            seen.add(port)
+            ports.append(port)
+    return ports
+
+
+def _detect_listen_ports(session: SSHSession, pid: int, owner: str | None = None) -> list[int]:
+    """Return every listen port owned by ``pid`` (telnet and http, no +1 guess)."""
+    ss_cmd = "sudo ss -tlnp" if owner else "ss -tlnp"
+    cmd = f"{ss_cmd} 2>/dev/null | grep 'pid={pid},'"
+    stdout, _, rc = _exec_ssh(session, cmd, timeout=10, sudo_user=None if owner else None)
+    if rc != 0 or not stdout.strip():
+        return []
+    return _parse_ss_listen_ports(stdout)
+
+
+def _classify_arthas_ports(ports: list[int]) -> tuple[int, int | None] | None:
+    """Pick telnet + the non-telnet listen port. Never invent telnet+1."""
+    if not ports:
+        return None
+    unique = list(dict.fromkeys(ports))
+    in_range = [port for port in unique if 3658 <= port <= 3665]
+    telnet = in_range[0] if in_range else next((port for port in unique if port < 8000), unique[0])
+    others = [port for port in unique if port != telnet]
+    http_port = others[0] if others else None
+    return telnet, http_port
+
+
+def _detect_existing_agent(
+    session: SSHSession, pid: int, owner: str | None = None
+) -> tuple[int, int | None] | None:
+    """Detect an already-listening Agent as (telnet_port, http_port)."""
+    return _classify_arthas_ports(_detect_listen_ports(session, pid, owner))
+
+
+def _detect_arthas_port(session: SSHSession, pid: int, owner: str | None = None) -> int | None:
+    """Detect Arthas telnet port via ss -tlnp (with sudo for cross-user)."""
+    for port in _detect_listen_ports(session, pid, owner):
+        if port < 8000:
+            logger.debug("[PORT-DETECT] PID %d -> port %d", pid, port)
+            return port
     return None
 
 
@@ -339,12 +381,14 @@ def _attach_agent(
         (
             f"sudo -u {owner} env HOME=/tmp java -jar {base_dir}/arthas-boot.jar "
             f"--attach-only --telnet-port {port} --http-port {http_port} "
+            f"--target-ip 127.0.0.1 "
             f"--arthas-home {base_dir} {pid}"
         )
         if owner
         else (
             f"java -jar {base_dir}/arthas-boot.jar "
             f"--attach-only --telnet-port {port} --http-port {http_port} "
+            f"--target-ip 127.0.0.1 "
             f"--arthas-home {base_dir} {pid}"
         )
     )
@@ -503,6 +547,238 @@ def _check_process_identity(
     return identity_complete(candidate)
 
 
+def _cache_agent_ports(
+    session: SSHSession,
+    pid: int,
+    telnet_port: int,
+    http_port: int | None,
+    owner: str | None,
+    origin: ArthasOrigin,
+    start_time: str | None = None,
+    *,
+    ready: bool = False,
+) -> None:
+    """Record half-ready or verified ports. http_port is detected, never telnet+1."""
+    state_key = _state_key(session, pid, start_time)
+    with _PID_STATE_LOCK:
+        _PID_STATE[state_key] = {
+            "port": telnet_port,
+            "http_port": http_port,
+            "owner": owner,
+            "ready": ready,
+        }
+    if isinstance(state_key, TargetIdentity):
+        known = _LIFECYCLE_REGISTRY.get(state_key)
+        if known is None:
+            _LIFECYCLE_REGISTRY.register(
+                state_key,
+                ArthasInstance(
+                    port=telnet_port,
+                    pid=pid,
+                    origin=origin,
+                    last_used_at=datetime.now(timezone.utc),
+                ),
+            )
+        else:
+            _LIFECYCLE_REGISTRY.touch(state_key, datetime.now(timezone.utc))
+
+
+def _clear_half_ready(
+    session: SSHSession, pid: int, start_time: str | None = None
+) -> None:
+    """Forget PID_STATE and lifecycle so a failed verify is not left READY."""
+    state_key = _state_key(session, pid, start_time)
+    with _PID_STATE_LOCK:
+        _PID_STATE.pop(state_key, None)
+        if start_time is None:
+            _PID_STATE.pop(pid, None)
+    if isinstance(state_key, TargetIdentity):
+        _LIFECYCLE_REGISTRY.forget(state_key)
+
+
+def _parse_arthas_version(output: str) -> str:
+    """Extract a version token from Arthas ``version`` output."""
+    text = _filter_output(output).strip()
+    if not text:
+        return ""
+    match = re.search(r"\b(\d+\.\d+(?:\.\d+)?)\b", text)
+    if match:
+        return match.group(1)
+    return text.splitlines()[0].strip()
+
+
+def _probe_arthas_version(
+    session: SSHSession,
+    pid: int,
+    telnet_port: int,
+    http_port: int | None,
+    owner: str | None = None,
+    start_time: str | None = None,
+    timeout: int = 15,
+) -> str:
+    """Run Arthas ``version`` over HTTP or CLI. Listening ports alone are not READY."""
+    errors: list[str] = []
+    if http_port is not None:
+        try:
+            result = ArthasHttpClient(
+                lambda command, timeout=60: _exec_ssh(
+                    session, command, timeout=timeout, sudo_user=owner
+                ),
+                int(http_port),
+                tls=os.environ.get("ARTHAS_HTTP_TLS", "").lower() in {"1", "true", "yes"},
+            ).execute("version", timeout)
+            version = _parse_arthas_version(result.output)
+            if version:
+                return version
+            errors.append("empty HTTP version output")
+        except (ArthasHttpError, ConnectionError, TimeoutError, OSError) as exc:
+            errors.append(str(exc))
+
+    try:
+        cache_key = _jar_cache_key(session, pid, owner, start_time)
+        jar_path = _jar_cache.get(cache_key)
+        if jar_path is None:
+            arthas_path = _find_arthas_path(session, owner)
+            jar_path = _find_arthas_client_jar(session, arthas_path, owner)
+            _jar_cache[cache_key] = jar_path
+        java_home = _get_java_home(session, owner)
+        env_prefix = f"JAVA_HOME={java_home} " if java_home else ""
+        exec_cmd = (
+            f"{env_prefix}"
+            f"java -jar '{jar_path}' "
+            f"127.0.0.1 {telnet_port} -c 'version' --execution-timeout {timeout * 1000} "
+            f"2>&1"
+        )
+        stdout, stderr, rc = _exec_ssh(session, exec_cmd, timeout=timeout + 10, sudo_user=owner)
+        version = _parse_arthas_version(stdout or stderr)
+        if version:
+            return version
+        errors.append(stderr or stdout or f"cli rc={rc}")
+    except Exception as exc:
+        errors.append(str(exc))
+
+    message = (
+        f"Arthas version probe failed: {'; '.join(errors)}"
+        if errors
+        else "Arthas version probe failed"
+    )
+    raise DomainError(
+        ErrorCode.ARTHAS_UNREACHABLE,
+        message,
+        phase="verify",
+        retryable=True,
+        suggestion="Check that the Arthas agent is listening and retry prepare_arthas.",
+    )
+
+
+def prepare_agent(
+    session: SSHSession,
+    pid: int,
+    *,
+    start_time: str | None = None,
+    boot_id: str | None = None,
+    owner: str | None = None,
+) -> PreparedArthas:
+    """VALIDATE_JVM → DETECT_EXISTING → PROBE → FIND_OR_INSTALL → ATTACH → VERIFY → READY."""
+    # VALIDATE_JVM
+    _check_process_identity(session, pid, start_time, boot_id)
+
+    # DETECT_EXISTING (real listen ports, not telnet+1)
+    existing = _detect_existing_agent(session, pid, owner)
+    origin: ArthasOrigin
+    telnet_port: int
+    http_port: int | None
+
+    if existing is not None:
+        telnet_port, http_port = existing
+        origin = ArthasOrigin.EXISTING
+    else:
+        # FIND_OR_INSTALL (find as.sh; keep install_arthas as the installer tool)
+        try:
+            arthas_path = _find_arthas_path(session, owner)
+        except RuntimeError as exc:
+            raise DomainError(
+                ErrorCode.ARTHAS_NOT_INSTALLED,
+                str(exc),
+                phase="find_or_install",
+                suggestion="Use install_arthas, then retry prepare_arthas.",
+            ) from exc
+        # ATTACH_IF_NEEDED
+        try:
+            telnet_port = _attach_agent(session, pid, arthas_path, owner, start_time)
+        except DomainError:
+            raise
+        except Exception as exc:
+            raise DomainError(
+                ErrorCode.ARTHAS_ATTACH_FAILED,
+                str(exc),
+                phase="attach",
+                suggestion="Check JVM attach permissions and retry prepare_arthas.",
+            ) from exc
+        origin = ArthasOrigin.STARTED_BY_PROXY
+        rediscovered = _detect_existing_agent(session, pid, owner)
+        if rediscovered is not None:
+            telnet_port, http_port = rediscovered
+        else:
+            state_key = _state_key(session, pid, start_time)
+            with _PID_STATE_LOCK:
+                cached_http = _PID_STATE.get(state_key, {}).get("http_port")
+            http_port = int(str(cached_http)) if cached_http is not None else None
+
+    # Half-ready cache: ports known, not READY until version succeeds
+    _cache_agent_ports(
+        session, pid, telnet_port, http_port, owner, origin, start_time, ready=False
+    )
+
+    # VERIFY(version)
+    try:
+        version = _probe_arthas_version(
+            session, pid, telnet_port, http_port, owner, start_time
+        )
+        if not str(version).strip():
+            raise DomainError(
+                ErrorCode.ARTHAS_UNREACHABLE,
+                "Arthas version probe returned an empty result",
+                phase="verify",
+                retryable=True,
+            )
+    except DomainError:
+        _clear_half_ready(session, pid, start_time)
+        raise
+    except Exception as exc:
+        _clear_half_ready(session, pid, start_time)
+        raise DomainError(
+            ErrorCode.ARTHAS_UNREACHABLE,
+            str(exc),
+            phase="verify",
+            retryable=True,
+        ) from exc
+
+    # READY
+    _cache_agent_ports(
+        session, pid, telnet_port, http_port, owner, origin, start_time, ready=True
+    )
+    return PreparedArthas(
+        origin=origin,
+        telnet_port=telnet_port,
+        http_port=http_port,
+        arthas_version=str(version).strip(),
+    )
+
+
+_SAFE_FALLBACK_TOKENS = frozenset({"jvm", "version", "thread", "dashboard", "memory"})
+
+
+def _cli_fallback_allowed(command: str, cancel: threading.Event | None) -> bool:
+    """CLI is allowed only for safe short commands that HTTP never accepted."""
+    if cancel is not None and cancel.is_set():
+        return False
+    if is_observation_command(command):
+        return False
+    token = command.strip().split(None, 1)[0].lower() if command.strip() else ""
+    return token in _SAFE_FALLBACK_TOKENS
+
+
 def _exec_command(
     session: SSHSession,
     pid: int,
@@ -513,6 +789,7 @@ def _exec_command(
     start_time: str | None = None,
     boot_id: str | None = None,
     backend_state: dict[str, object] | None = None,
+    cancel: threading.Event | None = None,
 ) -> str:
     """Execute Arthas command via client on detected port."""
     t0 = time.time()
@@ -538,15 +815,23 @@ def _exec_command(
                 int(str(http_port)),
                 tls=os.environ.get("ARTHAS_HTTP_TLS", "").lower() in {"1", "true", "yes"},
             ).execute(command, timeout)
-            if result.output.strip():
-                logger.info("[HTTP] command succeeded for PID %d", pid)
-                if backend_state is not None:
-                    backend_state.update(backend="arthas_http", degraded=False)
-                return _filter_output(result.output)
-        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.info("[HTTP] command succeeded for PID %d", pid)
             if backend_state is not None:
-                backend_state.update(backend="arthas_cli", degraded=True)
-            logger.info("[HTTP-FALLBACK] HTTP unavailable; executing CLI once: %s", exc)
+                backend_state.update(backend="arthas_http", degraded=False)
+            return _filter_output(result.output)
+        except ArthasHttpError as exc:
+            if exc.code == "command_failed":
+                raise DomainError(
+                    ErrorCode.ARTHAS_COMMAND_FAILED,
+                    str(exc),
+                    phase="execute",
+                ) from exc
+            if exc.code == "unreachable" and _cli_fallback_allowed(command, cancel):
+                if backend_state is not None:
+                    backend_state.update(backend="arthas_cli", degraded=True)
+                logger.info("[HTTP-FALLBACK] HTTP unavailable; executing CLI once: %s", exc)
+            else:
+                raise
 
     cache_key = _jar_cache_key(session, pid, owner, start_time)
     jar_path = _jar_cache.get(cache_key)
@@ -687,6 +972,47 @@ class ArthasClient:
             self.session, pid, self.start_time, self.boot_id
         )
 
+    def _execute_with_backend(
+        self,
+        pid: int,
+        command: str,
+        timeout: int = 60,
+        cancel: threading.Event | None = None,
+    ) -> str:
+        """Run a short command and record last_backend / last_backend_degraded."""
+        owner = self._resolve_owner(pid)
+        state: dict[str, object] = {"backend": "arthas_cli", "degraded": False}
+        result = _exec_command(
+            self.session,
+            pid,
+            command,
+            arthas_path=self._get_arthas_path(owner),
+            timeout=timeout,
+            owner=owner,
+            start_time=self.start_time,
+            boot_id=self.boot_id,
+            backend_state=state,
+            cancel=cancel,
+        )
+        self.last_backend = str(state["backend"])
+        self.last_backend_degraded = bool(state["degraded"])
+        self.last_identity_complete = bool(state.get("identity_complete", False))
+        return result
+
+    def prepare(self, pid: int) -> PreparedArthas:
+        """Detect or attach Arthas and verify with ``version`` before READY."""
+        self.last_identity_complete = _check_process_identity(
+            self.session, pid, self.start_time, self.boot_id
+        )
+        owner = self._resolve_owner(pid)
+        return prepare_agent(
+            self.session,
+            pid,
+            start_time=self.start_time,
+            boot_id=self.boot_id,
+            owner=owner,
+        )
+
     def list_java_processes(self) -> str:
         stdout, _, rc = _exec_ssh(
             self.session,
@@ -712,30 +1038,12 @@ class ArthasClient:
     def thread_dump(self, pid: int, top_n: int = 20) -> str:
         owner = self._resolve_owner(pid)
         logger.info("[API] thread_dump pid=%d, top_n=%d, owner=%s", pid, top_n, owner)
-        return _exec_command(
-            self.session,
-            pid,
-            f"thread -n {top_n}",
-            arthas_path=self._get_arthas_path(owner),
-            timeout=30,
-            owner=owner,
-            start_time=self.start_time,
-            boot_id=self.boot_id,
-        )
+        return self._execute_with_backend(pid, f"thread -n {top_n}", timeout=30)
 
     def heap_info(self, pid: int) -> str:
         owner = self._resolve_owner(pid)
         logger.info("[API] heap_info pid=%d, owner=%s", pid, owner)
-        return _exec_command(
-            self.session,
-            pid,
-            "dashboard -n 1",
-            arthas_path=self._get_arthas_path(owner),
-            timeout=30,
-            owner=owner,
-            start_time=self.start_time,
-            boot_id=self.boot_id,
-        )
+        return self._execute_with_backend(pid, "dashboard -n 1", timeout=30)
 
     def watch_method(
         self,
@@ -747,26 +1055,8 @@ class ArthasClient:
         condition: str | None = None,
         times: int = 5,
     ) -> str:
-        expressions = []
-        if watch_params:
-            expressions.append("params")
-        if watch_return:
-            expressions.append("returnObj")
-        expr_str = "#{" + ",".join(expressions) + "}"
-        command = f"watch {class_pattern} {method_pattern} '{expr_str}' -n {times} -x 3"
-        if condition:
-            command += f" '{condition}'"
-        owner = self._resolve_owner(pid)
-        return _exec_command(
-            self.session,
-            pid,
-            command,
-            arthas_path=self._get_arthas_path(owner),
-            timeout=30,
-            owner=owner,
-            start_time=self.start_time,
-            boot_id=self.boot_id,
-        )
+        """Closed CLI side path. Use MCP watch_method (HTTP streaming)."""
+        raise RuntimeError("use MCP watch_method; CLI watch is not a supported path")
 
     def trace_method(
         self,
@@ -777,46 +1067,29 @@ class ArthasClient:
         times: int = 5,
         timeout: int = 60,
     ) -> str:
-        """Run Arthas trace, deliberately distinct from watch."""
-        command = f"trace {class_pattern} {method_pattern}"
-        if condition:
-            command += f" '{condition}'"
-        command += f" -n {times}"
-        owner = self._resolve_owner(pid)
-        return _exec_command(
-            self.session,
-            pid,
-            command,
-            arthas_path=self._get_arthas_path(owner),
-            timeout=timeout,
-            owner=owner,
-            start_time=self.start_time,
-            boot_id=self.boot_id,
-        )
+        """Closed CLI side path. Use MCP trace_method (HTTP streaming)."""
+        raise RuntimeError("use MCP trace_method; CLI trace is not a supported path")
 
-    def exec_command(self, pid: int, command: str, timeout: int = 60) -> str:
+    def exec_command(
+        self,
+        pid: int,
+        command: str,
+        timeout: int = 60,
+        cancel: threading.Event | None = None,
+    ) -> str:
         owner = self._resolve_owner(pid)
         logger.info("[API] exec_command pid=%d, cmd='%.40s', owner=%s", pid, command, owner)
-        state: dict[str, object] = {"backend": "arthas_cli", "degraded": False}
-        result = _exec_command(
-            self.session,
-            pid,
-            command,
-            arthas_path=self._get_arthas_path(owner),
-            timeout=timeout,
-            owner=owner,
-            start_time=self.start_time,
-            boot_id=self.boot_id,
-            backend_state=state,
-        )
-        self.last_backend = str(state["backend"])
-        self.last_backend_degraded = bool(state["degraded"])
-        self.last_identity_complete = bool(state.get("identity_complete", False))
-        return result
+        return self._execute_with_backend(pid, command, timeout=timeout, cancel=cancel)
 
-    def execute_command(self, pid: int, command: str, timeout: int = 60) -> str:
+    def execute_command(
+        self,
+        pid: int,
+        command: str,
+        timeout: int = 60,
+        cancel: threading.Event | None = None,
+    ) -> str:
         """Execute a rendered Arthas command for typed diagnostic tools."""
-        return self.exec_command(pid, command, timeout)
+        return self.exec_command(pid, command, timeout, cancel=cancel)
 
     def execute_streaming_command(
         self,
@@ -844,6 +1117,8 @@ class ArthasClient:
             int(str(http_port)),
             tls=os.environ.get("ARTHAS_HTTP_TLS", "").lower() in {"1", "true", "yes"},
         )
+        self.last_backend = ArthasHttpStreamingClient.backend_name
+        self.last_backend_degraded = False
         return client.execute_stream(command, emit, cancel, timeout=timeout)
 
     def cleanup_expired(

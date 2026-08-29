@@ -43,6 +43,20 @@ COMMANDS = {
         "Method execution trace",
         streaming=True,
     ),
+    "watch_method": CommandSpec(
+        "watch_method",
+        "watch {class_pattern} {method_pattern}{condition_suffix} -n {times}",
+        "read_only",
+        "Method parameter and return watch",
+        streaming=True,
+    ),
+    "decompile_class": CommandSpec(
+        "decompile_class",
+        "jad --source-only {class}",
+        "read_only",
+        "Decompile class to Java source",
+        streaming=False,
+    ),
 }
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_.$*?\[\]:/=-]+$")
@@ -78,8 +92,10 @@ def build_command(name: str, params: dict[str, Any]) -> str:
         allowed.add("class_pattern")
     if name == "method_search":
         allowed.add("method_pattern")
-    if name == "trace_method":
+    if name in {"trace_method", "watch_method"}:
         allowed = {"class_pattern", "method_pattern", "condition", "times"}
+    if name == "decompile_class":
+        allowed = {"class_pattern", "class"}
     unknown = set(params) - allowed
     if unknown:
         raise ValueError(f"unknown parameter: {sorted(unknown)[0]}")
@@ -101,7 +117,7 @@ def build_command(name: str, params: dict[str, Any]) -> str:
             if "method_pattern" in params
             else ""
         )
-    if name == "trace_method":
+    if name in {"trace_method", "watch_method"}:
         values["class_pattern"] = _token(params.get("class_pattern"), "class_pattern")
         values["method_pattern"] = _token(params.get("method_pattern"), "method_pattern")
         times = _bounded_int(params, "times", 5)
@@ -109,4 +125,8 @@ def build_command(name: str, params: dict[str, Any]) -> str:
         if condition is not None:
             condition = _token(condition, "condition")
         values.update(times=times, condition_suffix=f" '{condition}'" if condition else "")
+    if name == "decompile_class":
+        raw = params.get("class_pattern", params.get("class"))
+        field = "class_pattern" if "class_pattern" in params else "class"
+        values["class"] = _token(raw, field)
     return spec.template.format(**values)
