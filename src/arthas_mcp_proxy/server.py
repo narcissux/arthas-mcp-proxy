@@ -52,7 +52,11 @@ from arthas_mcp_proxy.arthas_client import ArthasClient, _exec_ssh
 from arthas_mcp_proxy.arthas_http import ArthasHttpStreamingClient
 from arthas_mcp_proxy.command_catalog import COMMANDS, _token, build_command
 from arthas_mcp_proxy.cookbook import COOKBOOK
-from arthas_mcp_proxy.decorators import require_session, set_fallback_credential_getter
+from arthas_mcp_proxy.decorators import (
+    _ensure_transport_live,
+    require_session,
+    set_fallback_credential_getter,
+)
 from arthas_mcp_proxy.errors import DomainError, map_exception
 from arthas_mcp_proxy.health import health_payload
 from arthas_mcp_proxy.job_manager import ThreadPoolJobManager
@@ -1318,6 +1322,7 @@ def prepare_arthas(jvm_handle: str) -> str:
             pool=get_connection_pool(),
             fallback_getter=_get_session_credentials,
         )
+        _ensure_transport_live(session)
         prepared = ArthasClient(session).prepare(pid)
         return json.dumps(
             to_mcp_result(

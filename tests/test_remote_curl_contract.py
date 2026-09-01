@@ -197,8 +197,7 @@ def test_c1_c_inactive_transport_is_transport_lost() -> None:
 
 @pytest.mark.contract
 def test_c1_c_prepare_arthas_dead_ssh_is_transport_lost() -> None:
-    """C1-c leftover: prepare_arthas does not hit _ensure_transport_live."""
-    pytest.skip("leftover: prepare_arthas does not hit _ensure_transport_live")
+    """C1-c: dead SSH before prepare_arthas → SSH_TRANSPORT_LOST."""
     handle = get_jvm_registry().mint(
         target_key="ops@10.0.0.8:22",
         pid=4242,
