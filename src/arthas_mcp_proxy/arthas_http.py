@@ -89,9 +89,7 @@ class ArthasHttpClient:
                 code=_curl_failure_code(rc, stderr, stdout),
             )
         if not stdout.strip():
-            raise ArthasHttpError(
-                "Arthas HTTP response body was empty", code="empty_body"
-            )
+            raise ArthasHttpError("Arthas HTTP response body was empty", code="empty_body")
         try:
             body: object = json.loads(stdout)
             # Some Arthas releases return an escaped JSON document as the

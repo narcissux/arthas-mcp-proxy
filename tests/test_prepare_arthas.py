@@ -96,9 +96,7 @@ async def test_b5_1_a_prepare_arthas_listed_with_required_jvm_handle() -> None:
     assert schema.get("type") == "object"
     required = schema.get("required") or []
     assert "jvm_handle" in required
-    assert required == ["jvm_handle"] or (
-        "session_id" not in required and "pid" not in required
-    )
+    assert required == ["jvm_handle"] or ("session_id" not in required and "pid" not in required)
     assert "session_id" not in required
     assert "pid" not in required
 

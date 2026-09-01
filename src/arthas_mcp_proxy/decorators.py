@@ -238,26 +238,26 @@ def require_session(
                 return "Error: session_id is required"
 
             pool = pool_getter()
-            session: SSHSession | None = pool.get_session(session_id)
+            resolved: SSHSession | None = pool.get_session(session_id)
 
-            if not session and fallback and _fallback_credential_getter is not None:
+            if not resolved and fallback and _fallback_credential_getter is not None:
                 creds = _fallback_credential_getter(session_id)
                 if creds:
-                    session = pool.get_session_by_host(
+                    resolved = pool.get_session_by_host(
                         str(creds["host"]), int(creds["port"]), str(creds["username"])
                     )
 
-            if not session:
+            if not resolved:
                 return _session_not_found_result(structured_errors=structured_errors)
 
             try:
-                _ensure_transport_live(session)
+                _ensure_transport_live(resolved)
             except DomainError as exc:
                 if structured_errors:
                     return _structured_domain_error(exc)
                 return f"Error: {exc.message}"
 
-            kwargs["session"] = session
+            kwargs["session"] = resolved
             result = func(*args, **kwargs)
             return result
 

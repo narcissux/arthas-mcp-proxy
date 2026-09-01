@@ -124,4 +124,3 @@ def test_typed_executor_keeps_streaming_backend_name() -> None:
     client.last_backend = ArthasHttpStreamingClient.backend_name
     result = execute_typed_command(client, pid=123, command="thread_dump", params={"top_n": 1})
     assert result.meta.backend == ArthasHttpStreamingClient.backend_name
-

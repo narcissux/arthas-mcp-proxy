@@ -23,10 +23,7 @@ from tests.test_readme_contract import ALL_PROMPTS, ALL_TOOLS
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README_PATH = REPO_ROOT / "README.md"
 DESIGN_PATH = (
-    REPO_ROOT
-    / "docs"
-    / "plans"
-    / "2026-08-01-arthas-mcp-ai-diagnostics-implementation-design.md"
+    REPO_ROOT / "docs" / "plans" / "2026-08-01-arthas-mcp-ai-diagnostics-implementation-design.md"
 )
 GITIGNORE_PATH = REPO_ROOT / ".gitignore"
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"

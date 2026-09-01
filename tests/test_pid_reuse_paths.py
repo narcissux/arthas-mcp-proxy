@@ -25,8 +25,6 @@ def session() -> MagicMock:
     [
         ("thread_dump", (123,), {}),
         ("heap_info", (123,), {}),
-        ("watch_method", (123, "Service", "run"), {}),
-        ("trace_method", (123, "Service", "run"), {}),
         ("exec_command", (123, "jvm"), {}),
         ("execute_command", (123, "jvm"), {}),
     ],
@@ -43,6 +41,44 @@ def test_all_execute_watch_trace_paths_inherit_session_identity(
         assert getattr(client, method)(*args, **kwargs) == "ok"
     assert execute.call_args.kwargs["start_time"] == session.start_time
     assert execute.call_args.kwargs["boot_id"] == session.boot_id
+
+
+@pytest.mark.parametrize(
+    "method, args, kwargs",
+    [
+        ("watch_method", (123, "Service", "run"), {}),
+        ("trace_method", (123, "Service", "run"), {}),
+    ],
+)
+def test_cli_watch_trace_paths_are_closed(
+    session: MagicMock, method: str, args: tuple[object, ...], kwargs: dict[str, object]
+) -> None:
+    """C3: CLI watch/trace are not a supported path; MCP streaming is required."""
+    client = ArthasClient(session)
+    with pytest.raises(RuntimeError, match="not a supported path"):
+        getattr(client, method)(*args, **kwargs)
+
+
+def test_execute_streaming_command_inherits_session_identity(session: MagicMock) -> None:
+    """Watch/trace identity rides execute_streaming_command, not CLI watch/trace."""
+    import threading
+
+    client = ArthasClient(session)
+    emit = MagicMock()
+    cancel = threading.Event()
+    with (
+        patch.object(client, "_resolve_owner", return_value=None),
+        patch.object(client, "_get_arthas_path", return_value="arthas/as.sh"),
+        patch(
+            "arthas_mcp_proxy.arthas_client._check_process_identity", return_value=True
+        ) as check_id,
+        patch("arthas_mcp_proxy.arthas_client._ensure_agent", return_value=3658),
+        patch("arthas_mcp_proxy.arthas_client.ArthasHttpStreamingClient") as stream_cls,
+    ):
+        stream_cls.return_value.execute_stream.return_value = "ok"
+        assert client.execute_streaming_command(123, "watch Service run", emit, cancel) == "ok"
+    assert check_id.call_args.args[2] == session.start_time
+    assert check_id.call_args.args[3] == session.boot_id
 
 
 def test_detach_revalidates_identity_before_stopping_agent(session: MagicMock) -> None:

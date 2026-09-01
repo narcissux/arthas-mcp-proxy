@@ -59,9 +59,7 @@ def test_start_diagnostic_job_valid_command_without_target_leaves_no_orphan() ->
 def test_start_diagnostic_job_unknown_with_target_leaves_no_orphan() -> None:
     before = {job.job_id for job in _job_store._jobs.values()}
     result = start_diagnostic_job("unknown", {}, "session", 123)
-    assert result.startswith("Error:") or (
-        json.loads(result).get("isError") is True
-    )
+    assert result.startswith("Error:") or (json.loads(result).get("isError") is True)
     after = {job.job_id for job in _job_store._jobs.values()}
     assert after == before
     running = [job for job in _job_store._jobs.values() if job.job_id not in before]

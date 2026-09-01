@@ -583,9 +583,7 @@ def _cache_agent_ports(
             _LIFECYCLE_REGISTRY.touch(state_key, datetime.now(timezone.utc))
 
 
-def _clear_half_ready(
-    session: SSHSession, pid: int, start_time: str | None = None
-) -> None:
+def _clear_half_ready(session: SSHSession, pid: int, start_time: str | None = None) -> None:
     """Forget PID_STATE and lifecycle so a failed verify is not left READY."""
     state_key = _state_key(session, pid, start_time)
     with _PID_STATE_LOCK:
@@ -726,15 +724,11 @@ def prepare_agent(
             http_port = int(str(cached_http)) if cached_http is not None else None
 
     # Half-ready cache: ports known, not READY until version succeeds
-    _cache_agent_ports(
-        session, pid, telnet_port, http_port, owner, origin, start_time, ready=False
-    )
+    _cache_agent_ports(session, pid, telnet_port, http_port, owner, origin, start_time, ready=False)
 
     # VERIFY(version)
     try:
-        version = _probe_arthas_version(
-            session, pid, telnet_port, http_port, owner, start_time
-        )
+        version = _probe_arthas_version(session, pid, telnet_port, http_port, owner, start_time)
         if not str(version).strip():
             raise DomainError(
                 ErrorCode.ARTHAS_UNREACHABLE,
@@ -755,9 +749,7 @@ def prepare_agent(
         ) from exc
 
     # READY
-    _cache_agent_ports(
-        session, pid, telnet_port, http_port, owner, origin, start_time, ready=True
-    )
+    _cache_agent_ports(session, pid, telnet_port, http_port, owner, origin, start_time, ready=True)
     return PreparedArthas(
         origin=origin,
         telnet_port=telnet_port,

@@ -137,6 +137,7 @@ def test_b3_1_f_same_jvm_reuses_unexpired_handle() -> None:
     assert first == second
     assert OPAQUE_HANDLE_RE.fullmatch(first)
 
+
 @pytest.mark.unit
 def test_b3_1_identity_key_includes_boot_id_and_start_time() -> None:
     """Different start_time or boot_id is a different JVM and gets a new handle."""
@@ -184,4 +185,3 @@ def test_b3_1_mint_reuse_slides_ttl() -> None:
     assert still_live.expires_at == clock.now + 1_800
     assert still_live.last_used_at == clock.now
     assert still_live.expires_at > first.expires_at
-

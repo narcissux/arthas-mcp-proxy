@@ -643,6 +643,4 @@ def test_c2_i_real_http_api_does_not_cli(request: pytest.FixtureRequest) -> None
     has_ssh_host = bool(os.environ.get("TEST_SSH_HOST"))
     if not use_docker and not has_ssh_host:
         pytest.skip("specified-not-run: no docker/target")
-    pytest.fail(
-        "C2-i live HTTP /api version/jvm/memory path is not wired; not green"
-    )
+    pytest.fail("C2-i live HTTP /api version/jvm/memory path is not wired; not green")

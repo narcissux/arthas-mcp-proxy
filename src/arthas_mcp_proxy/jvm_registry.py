@@ -140,13 +140,12 @@ class JvmRegistry:
         return best
 
 
-
 def _coerce_pid(pid: int | None) -> int | None:
     if pid is None:
         return None
     if isinstance(pid, bool) or not isinstance(pid, int):
         try:
-            return int(pid)  # type: ignore[arg-type]
+            return int(pid)
         except (TypeError, ValueError) as exc:
             raise DomainError(
                 ErrorCode.INVALID_ARGUMENT,

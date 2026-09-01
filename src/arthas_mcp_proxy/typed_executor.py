@@ -48,9 +48,7 @@ def execute_typed_command(
     request_id = f"req-{uuid.uuid4().hex}"
     try:
         rendered = build_command(command, params)
-        output = client.execute_command(
-            pid=pid, command=rendered, timeout=timeout, cancel=cancel
-        )
+        output = client.execute_command(pid=pid, command=rendered, timeout=timeout, cancel=cancel)
         backend = _product_backend(getattr(client, "last_backend", None))
         backend_name = cast("BackendName", backend)
         return ToolResult(

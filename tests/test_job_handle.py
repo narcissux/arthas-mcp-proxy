@@ -39,9 +39,7 @@ PID = 4242
 START_TIME = "17000"
 BOOT_ID = "boot-c4"
 APP_NAME = "inventory-service.jar"
-PRODUCT_BACKENDS = frozenset(
-    {"ssh", "arthas_cli", "arthas_http", "arthas_http_long_polling"}
-)
+PRODUCT_BACKENDS = frozenset({"ssh", "arthas_cli", "arthas_http", "arthas_http_long_polling"})
 
 
 def _mint(**overrides: object) -> str:
@@ -188,9 +186,7 @@ def test_c4_d_fourth_running_job_on_same_jvm_is_quota_exceeded() -> None:
             if hold_count["n"] >= 3:
                 started.set()
         release.wait(2)
-        return json.dumps(
-            {"structuredContent": {"data": {"output": "held"}, "summary": "ok"}}
-        )
+        return json.dumps({"structuredContent": {"data": {"output": "held"}, "summary": "ok"}})
 
     pool = get_connection_pool()
     running_ids: list[str] = []
@@ -201,17 +197,13 @@ def test_c4_d_fourth_running_job_on_same_jvm_is_quota_exceeded() -> None:
     ):
         try:
             for _ in range(JOB_MAX_ACTIVE_PER_JVM):
-                payload = json.loads(
-                    start_diagnostic_job("thread_dump", {}, jvm_handle=handle)
-                )
+                payload = json.loads(start_diagnostic_job("thread_dump", {}, jvm_handle=handle))
                 assert payload["status"] == "RUNNING"
                 running_ids.append(payload["job_id"])
             assert started.wait(1)
             fourth = start_diagnostic_job("thread_dump", {}, jvm_handle=handle)
             assert _error_code(fourth) == "JOB_QUOTA_EXCEEDED"
-            other_job = json.loads(
-                start_diagnostic_job("thread_dump", {}, jvm_handle=other)
-            )
+            other_job = json.loads(start_diagnostic_job("thread_dump", {}, jvm_handle=other))
             assert other_job["status"] == "RUNNING"
             running_ids.append(other_job["job_id"])
         finally:
@@ -363,7 +355,9 @@ def test_c4_h_job_stream_is_proxy_event_stream_not_arthas() -> None:
     window = readme[max(0, stream_idx - 200) : stream_idx + 400].lower()
     assert "proxy" in window
     assert "not an arthas command channel" in window or "not an arthas" in window
-    assert "tunnel" in window
+    assert "websocket" in window
+    assert "not an arthas websocket" in window
+    assert "ssh tunnel" not in window
 
     manager = ThreadPoolJobManager(max_workers=1)
     try:
@@ -374,7 +368,9 @@ def test_c4_h_job_stream_is_proxy_event_stream_not_arthas() -> None:
         combined = doc.lower()
         assert "proxy" in combined
         assert "not an arthas" in combined
-        assert "tunnel" in combined or "not an arthas command channel" in combined
+        assert "not an arthas command channel" in combined
+        assert "websocket" in combined
+        assert "not a tunnel" in combined
     finally:
         manager.shutdown()
 
@@ -429,9 +425,7 @@ def test_c4_d_session_pid_without_handle_still_has_per_jvm_quota() -> None:
             if hold_count["n"] >= 3:
                 started.set()
         release.wait(2)
-        return json.dumps(
-            {"structuredContent": {"data": {"output": "held"}, "summary": "ok"}}
-        )
+        return json.dumps({"structuredContent": {"data": {"output": "held"}, "summary": "ok"}})
 
     def get_session(session_id: str) -> MagicMock | None:
         if session_id == "c4-sess":
@@ -448,23 +442,17 @@ def test_c4_d_session_pid_without_handle_still_has_per_jvm_quota() -> None:
     ):
         try:
             for _ in range(JOB_MAX_ACTIVE_PER_JVM):
-                payload = json.loads(
-                    start_diagnostic_job("thread_dump", {}, "c4-sess", PID)
-                )
+                payload = json.loads(start_diagnostic_job("thread_dump", {}, "c4-sess", PID))
                 assert payload["status"] == "RUNNING"
                 assert "jvm_handle" not in payload
                 running_ids.append(payload["job_id"])
             assert started.wait(1)
             fourth = start_diagnostic_job("thread_dump", {}, "c4-sess", PID)
             assert _error_code(fourth) == "JOB_QUOTA_EXCEEDED"
-            other = json.loads(
-                start_diagnostic_job("thread_dump", {}, "c4-other", PID)
-            )
+            other = json.loads(start_diagnostic_job("thread_dump", {}, "c4-other", PID))
             assert other["status"] == "RUNNING"
             running_ids.append(other["job_id"])
-            other_pid = json.loads(
-                start_diagnostic_job("thread_dump", {}, "c4-sess", PID + 1)
-            )
+            other_pid = json.loads(start_diagnostic_job("thread_dump", {}, "c4-sess", PID + 1))
             assert other_pid["status"] == "RUNNING"
             running_ids.append(other_pid["job_id"])
         finally:
@@ -549,9 +537,7 @@ def test_c4_d_three_start_jobs_then_watch_hits_job_quota() -> None:
             if hold_count["n"] >= 3:
                 started.set()
         release.wait(2)
-        return json.dumps(
-            {"structuredContent": {"data": {"output": "held"}, "summary": "ok"}}
-        )
+        return json.dumps({"structuredContent": {"data": {"output": "held"}, "summary": "ok"}})
 
     pool = get_connection_pool()
     running_ids: list[str] = []
@@ -563,9 +549,7 @@ def test_c4_d_three_start_jobs_then_watch_hits_job_quota() -> None:
     ):
         try:
             for _ in range(JOB_MAX_ACTIVE_PER_JVM):
-                payload = json.loads(
-                    start_diagnostic_job("thread_dump", {}, jvm_handle=handle)
-                )
+                payload = json.loads(start_diagnostic_job("thread_dump", {}, jvm_handle=handle))
                 assert payload["status"] == "RUNNING"
                 running_ids.append(payload["job_id"])
             assert started.wait(1)
@@ -656,4 +640,3 @@ def test_c4_store_quota_key_without_handle_caps_running() -> None:
     assert excinfo.value.code is ErrorCode.JOB_QUOTA_EXCEEDED
     other = store.create(quota_key=key + "|other")
     assert other.status is JobStatus.RUNNING
-
