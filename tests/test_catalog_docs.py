@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -233,6 +235,19 @@ def test_d_h_gitignore_has_star_log_and_recipe_does_not_commit_server_log() -> N
     assert "git add server.log" not in readme
     assert "commit server.log" not in readme
     assert "server.log" not in readme
+
+
+@pytest.mark.contract
+def test_d_h_server_log_is_not_tracked_by_git() -> None:
+    """D leftover: server.log must stay out of the index even if the file exists."""
+    git = shutil.which("git")
+    assert git is not None
+    tracked = subprocess.check_output(  # noqa: S603
+        [git, "ls-files", "--", "server.log"],
+        cwd=REPO_ROOT,
+        text=True,
+    ).strip()
+    assert tracked == ""
 
 
 @pytest.mark.contract
