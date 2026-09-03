@@ -343,3 +343,22 @@ def test_b5_1_l_attach_argv_includes_ports_and_target_ip() -> None:
     assert "--telnet-port 3658" in cmd
     assert "--http-port 3660" in cmd
     assert "--target-ip 127.0.0.1" in cmd
+
+
+@pytest.mark.unit
+def test_classify_prefers_high_port_as_http_even_if_listed_first() -> None:
+    from arthas_mcp_proxy.arthas_client import _classify_arthas_ports
+
+    assert _classify_arthas_ports([8563, 3658]) == (3658, 8563)
+    assert _classify_arthas_ports([3658, 8563]) == (3658, 8563)
+    assert _classify_arthas_ports([3658, 4012]) == (3658, 4012)
+
+
+@pytest.mark.unit
+def test_get_java_home_command_has_no_stray_bracket() -> None:
+    import inspect
+
+    from arthas_mcp_proxy.arthas_client import _get_java_home
+
+    src = inspect.getsource(_get_java_home)
+    assert ")}]" not in src

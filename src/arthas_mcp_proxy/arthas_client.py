@@ -264,7 +264,7 @@ def _copy_arthas_to_target(session: SSHSession, owner: str | None = None) -> boo
 def _get_java_home(session: SSHSession, owner: str | None = None) -> str:
     cmd = (
         "echo ${JAVA_HOME:-$(readlink -f $(which java 2>/dev/null) 2>/dev/null "
-        "| sed 's|/bin/java||; s|/jre||')}]"
+        "| sed 's|/bin/java||; s|/jre||')}"
     )
     stdout, _, rc = _exec_ssh(session, cmd, timeout=10, sudo_user=owner)
     if rc == 0 and stdout.strip():
@@ -315,10 +315,18 @@ def _classify_arthas_ports(ports: list[int]) -> tuple[int, int | None] | None:
     if not ports:
         return None
     unique = list(dict.fromkeys(ports))
-    in_range = [port for port in unique if 3658 <= port <= 3665]
-    telnet = in_range[0] if in_range else next((port for port in unique if port < 8000), unique[0])
-    others = [port for port in unique if port != telnet]
-    http_port = others[0] if others else None
+    telnet_range = [port for port in unique if 3658 <= port <= 3665]
+    http_range = [port for port in unique if port >= 8000]
+    telnet = (
+        telnet_range[0]
+        if telnet_range
+        else next((port for port in unique if port < 8000), unique[0])
+    )
+    if http_range and http_range[0] != telnet:
+        http_port = http_range[0]
+    else:
+        others = [port for port in unique if port != telnet]
+        http_port = others[0] if others else None
     return telnet, http_port
 
 
@@ -338,17 +346,22 @@ def _detect_arthas_port(session: SSHSession, pid: int, owner: str | None = None)
     return None
 
 
-def _find_free_port(session: SSHSession, exclude: int | None = None) -> int:
-    """Find first available port in range 3658-3665."""
-    for port in range(3658, 3666):
+def _find_free_port(
+    session: SSHSession,
+    exclude: int | None = None,
+    start: int = 3658,
+    end: int = 3665,
+) -> int:
+    """Find first available TCP port in [start, end]. Default is Arthas telnet."""
+    for port in range(start, end + 1):
         out, _, _ = _exec_ssh(
             session, f"ss -tln 2>/dev/null | grep -q ':{port} '; echo $?", timeout=5
         )
         if out.strip() == "1" and port != exclude:
             logger.debug("[PORT-FIND] Port %d is free", port)
             return port
-    logger.error("[PORT-FIND] No free port in range 3658-3665")
-    raise RuntimeError("No free port in range 3658-3665")
+    logger.error("[PORT-FIND] No free port in range %d-%d", start, end)
+    raise RuntimeError(f"No free port in range {start}-{end}")
 
 
 def _attach_agent(
@@ -374,7 +387,7 @@ def _attach_agent(
     base_dir = arthas_path.rsplit("/", 1)[0] if "/" in arthas_path else "/tmp/arthas-all"  # noqa: S108
 
     port = _find_free_port(session)
-    http_port = _find_free_port(session, exclude=port)
+    http_port = _find_free_port(session, exclude=port, start=8563, end=8570)
     logger.info("[ATTACH] Found free port %d (HTTP %d) for PID %d", port, http_port, pid)
 
     attach_cmd = (
