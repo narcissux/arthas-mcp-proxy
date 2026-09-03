@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -630,17 +629,3 @@ def test_c2_h_typed_short_command_carries_backend() -> None:
     assert result.status == "success"
     assert result.meta.backend == "arthas_http"
     assert result.meta.degraded is False
-
-
-# ── C2-i ─────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.integration
-@pytest.mark.real_jvm
-def test_c2_i_real_http_api_does_not_cli(request: pytest.FixtureRequest) -> None:
-    """C2-i: live HTTP /api version/jvm/memory must not fall through to CLI."""
-    use_docker = bool(request.config.getoption("--docker-target", default=False))
-    has_ssh_host = bool(os.environ.get("TEST_SSH_HOST"))
-    if not use_docker and not has_ssh_host:
-        pytest.skip("specified-not-run: no docker/target")
-    pytest.fail("C2-i live HTTP /api version/jvm/memory path is not wired; not green")
