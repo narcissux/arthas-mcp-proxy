@@ -183,3 +183,71 @@ def test_b6_docker_pid_replacement_via_mcp_tools(
     new_dump = _payload(dumped_new)
     assert new_dump["isError"] is False, new_dump
     assert new_dump["structuredContent"]["data"]["output"]
+
+
+def _start_extra_math_game(ssh_session: SSHSession) -> None:
+    """Start one more math-game JVM without killing the existing ones."""
+    before = len(_math_game_pids(_math_game_listing(ssh_session)))
+    _, stdout, stderr = ssh_session.client.exec_command(
+        "setsid nohup java -jar /opt/math-game.jar </dev/null "
+        ">/tmp/math-game-2.out 2>&1 & echo started:$!"
+    )
+    out = stdout.read().decode("utf-8", errors="replace")
+    err = stderr.read().decode("utf-8", errors="replace")
+    if "started:" not in out:
+        pytest.fail(f"failed to spawn extra math-game.jar: {out} {err}")
+    deadline = time.time() + 30
+    last = ""
+    while time.time() < deadline:
+        last = _math_game_listing(ssh_session)
+        if len(_math_game_pids(last)) >= max(before + 1, 2):
+            return
+        time.sleep(0.5)
+    pytest.fail("second math-game.jar did not come up:\n" + last)
+
+
+@pytest.mark.integration
+@pytest.mark.real_jvm
+def test_b6_d_docker_ambiguous_same_name_does_not_mint(
+    request: pytest.FixtureRequest,
+    ssh_session: SSHSession,
+) -> None:
+    """B6-d live: two math-game.jar -> ambiguous, no handle, no attach."""
+    from arthas_mcp_proxy.server import connect_ssh, find_java_application
+    from arthas_mcp_proxy.ssh_pool import get_connection_pool
+
+    use_docker = bool(request.config.getoption("--docker-target", default=False))
+    has_ssh_host = bool(os.environ.get("TEST_SSH_HOST"))
+    if not use_docker and not has_ssh_host:
+        pytest.skip("specified-not-run: no docker/target")
+
+    host = str(ssh_session.host)
+    port = int(ssh_session.port)
+    username = str(ssh_session.username)
+    password = os.environ.get("TEST_SSH_PASSWORD") or "testpass"
+
+    session_line = connect_ssh(host=host, port=port, username=username, password=password)
+    session_id = session_line.rsplit("Session ID:", 1)[1].strip()
+    assert get_connection_pool().get_session(session_id) is not None
+
+    _ensure_single_math_game(ssh_session)
+    _start_extra_math_game(ssh_session)
+    pids = _math_game_pids(_math_game_listing(ssh_session))
+    assert len(pids) >= 2, pids
+
+    found = find_java_application(session_id, APP)
+    body = _payload(found)
+    assert body["isError"] is False, body
+    data = _data_ok(found)
+    assert data["status"] == "ambiguous", found
+    assert "handle" not in data
+    assert len(data["candidates"]) >= 2
+
+    _, stdout, _ = ssh_session.client.exec_command(
+        f"ss -tlnp 2>/dev/null | grep -E 'pid=({'|'.join(str(pid) for pid in pids)}),' || true"
+    )
+    ss_out = stdout.read().decode("utf-8", errors="replace")
+    for listen_port in range(3658, 3666):
+        assert f":{listen_port}" not in ss_out, ss_out
+    for listen_port in range(8563, 8571):
+        assert f":{listen_port}" not in ss_out, ss_out
