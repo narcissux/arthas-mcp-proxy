@@ -147,3 +147,69 @@ def test_b5_1_f_docker_prestarted_arthas_existing_not_stopped(
     still = _ss_for_pid(ssh_session, pid)
     assert ":3658" in still, still
     assert ":8563" in still, still
+
+
+def _need_docker(request: pytest.FixtureRequest) -> None:
+    if not request.config.getoption("--docker-target", default=False) and not os.environ.get(
+        "TEST_SSH_HOST"
+    ):
+        pytest.skip("specified-not-run: no docker/target")
+
+
+def _backdate_and_cleanup(session_id: str, pid: int, *, authorized: bool):
+    from datetime import datetime, timedelta, timezone
+
+    from arthas_mcp_proxy.arthas_client import _LIFECYCLE_REGISTRY, ArthasClient, _state_key
+    from arthas_mcp_proxy.ssh_pool import get_connection_pool
+
+    session = get_connection_pool().get_session(session_id)
+    assert session is not None
+    client = ArthasClient(session)
+    identity = _state_key(session, pid, client.start_time)
+    instance = _LIFECYCLE_REGISTRY.get(identity)
+    assert instance is not None, "lifecycle registry missing instance after prepare"
+    instance.last_used_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    return client.cleanup_expired(
+        pid, datetime.now(timezone.utc), ttl_seconds=60, authorized=authorized
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.real_jvm
+def test_b5_1_i_docker_authorized_cleanup_only_proxy_owned(
+    request: pytest.FixtureRequest,
+    ssh_session: SSHSession,
+) -> None:
+    """B5-1-i: authorized idle cleanup stops STARTED_BY_PROXY only."""
+    from arthas_mcp_proxy.server import find_java_application, prepare_arthas
+
+    _need_docker(request)
+
+    _restart_math_game(ssh_session)
+    session_id = _connect(ssh_session)
+    handle = _find_handle(session_id)
+    data = _data_ok(find_java_application(session_id, APP))
+    pid = int(data["candidates"][0]["pid"])
+    prepared = _data_ok(prepare_arthas(jvm_handle=handle))
+    assert prepared["origin"] == "started_by_proxy", prepared
+    assert _backdate_and_cleanup(session_id, pid, authorized=False) == []
+    assert ":3658" in _ss_for_pid(ssh_session, pid) or ":8563" in _ss_for_pid(ssh_session, pid)
+
+    cleaned = _backdate_and_cleanup(session_id, pid, authorized=True)
+    assert cleaned, cleaned
+    still = _ss_for_pid(ssh_session, pid)
+    assert ":3658" not in still, still
+    assert ":8563" not in still, still
+
+    _restart_math_game(ssh_session)
+    pids = _math_game_pids(_math_game_listing(ssh_session))
+    pid = pids[0]
+    _prestart_arthas(ssh_session, pid)
+    session_id = _connect(ssh_session)
+    handle = _find_handle(session_id)
+    prepared = _data_ok(prepare_arthas(jvm_handle=handle))
+    assert prepared["origin"] == "existing", prepared
+    assert _backdate_and_cleanup(session_id, pid, authorized=True) == []
+    still = _ss_for_pid(ssh_session, pid)
+    assert ":3658" in still, still
+    assert ":8563" in still, still
