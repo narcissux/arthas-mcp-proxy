@@ -90,6 +90,23 @@ def _state_key(
     return pid
 
 
+def _jvm_has_running_job(session: SSHSession, pid: int) -> bool:
+    """True when a RUNNING diagnostic job is bound to this JVM handle."""
+    from .job_store import get_job_store
+    from .jobs import JobStatus
+    from .jvm_registry import get_jvm_registry
+    from .target_state import target_key
+
+    store = get_job_store()
+    if store is None:
+        return False
+    key = target_key(str(session.host), int(session.port), str(session.username))
+    binding = get_jvm_registry().find_live(target_key=key, pid=pid)
+    if binding is None:
+        return False
+    return bool(store.list(status=JobStatus.RUNNING, jvm_handle=binding.handle, limit=1))
+
+
 def _jar_cache_key(
     session: SSHSession,
     pid: int,
@@ -1143,6 +1160,8 @@ class ArthasClient:
         """
         identity = _state_key(self.session, pid, self.start_time)
         if not isinstance(identity, TargetIdentity):
+            return []
+        if _jvm_has_running_job(self.session, pid):
             return []
 
         def detach_instance(instance: ArthasInstance) -> None:

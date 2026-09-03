@@ -61,7 +61,7 @@ from arthas_mcp_proxy.errors import DomainError, map_exception
 from arthas_mcp_proxy.health import health_payload
 from arthas_mcp_proxy.job_manager import ThreadPoolJobManager
 from arthas_mcp_proxy.job_serialization import serialize_job
-from arthas_mcp_proxy.job_store import JobStore, SQLiteJobStore
+from arthas_mcp_proxy.job_store import JobStore, SQLiteJobStore, install_job_store
 from arthas_mcp_proxy.jobs import JobStatus
 from arthas_mcp_proxy.jvm_registry import get_jvm_registry, resolve_tool_target
 from arthas_mcp_proxy.models import ErrorCode, ErrorDetail, ResultMeta, ToolResult
@@ -168,6 +168,7 @@ _job_store = (
     if os.environ.get("ARTHAS_JOB_STORE_SQLITE")
     else JobStore()
 )
+install_job_store(_job_store)
 _watch_policy = ObservationPolicy()
 _JOB_OUTPUT_MAX_CHARS = 16_384
 _job_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="diagnostic-job")

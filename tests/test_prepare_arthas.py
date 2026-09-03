@@ -293,30 +293,6 @@ def test_b5_1_k_existing_http_port_is_not_telnet_plus_one() -> None:
     attach.assert_not_called()
 
 
-@pytest.mark.integration
-def test_b5_1_f_docker_prestarted_arthas_existing_not_stopped() -> None:
-    """B5-1-f: Docker pre-started Arthas — specified-not-run (no docker)."""
-    pytest.skip("specified-not-run: no docker on this machine")
-
-
-@pytest.mark.integration
-def test_b5_1_g_docker_no_arthas_started_by_proxy() -> None:
-    """B5-1-g: Docker without Arthas — specified-not-run (no docker)."""
-    pytest.skip("specified-not-run: no docker on this machine")
-
-
-@pytest.mark.integration
-def test_b5_1_h_docker_active_job_ttl_does_not_stop() -> None:
-    """B5-1-h: active job when TTL elapses — specified-not-run (no docker)."""
-    pytest.skip("specified-not-run: no docker on this machine")
-
-
-@pytest.mark.integration
-def test_b5_1_i_docker_authorized_cleanup_only_proxy_owned() -> None:
-    """B5-1-i: authorized cleanup after idle — specified-not-run (no docker)."""
-    pytest.skip("specified-not-run: no docker on this machine")
-
-
 @pytest.mark.unit
 def test_b5_1_l_attach_argv_includes_ports_and_target_ip() -> None:
     """B5-1-l: attach command includes --telnet-port, --http-port, --target-ip."""

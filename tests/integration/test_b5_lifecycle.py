@@ -213,3 +213,37 @@ def test_b5_1_i_docker_authorized_cleanup_only_proxy_owned(
     still = _ss_for_pid(ssh_session, pid)
     assert ":3658" in still, still
     assert ":8563" in still, still
+
+
+@pytest.mark.integration
+@pytest.mark.real_jvm
+def test_b5_1_h_docker_active_job_ttl_does_not_stop(
+    request: pytest.FixtureRequest,
+    ssh_session: SSHSession,
+) -> None:
+    """B5-1-h: a RUNNING job blocks authorized idle cleanup."""
+    from arthas_mcp_proxy.job_store import get_job_store
+    from arthas_mcp_proxy.jobs import JobStatus
+    from arthas_mcp_proxy.server import find_java_application, prepare_arthas
+
+    _need_docker(request)
+    _restart_math_game(ssh_session)
+    session_id = _connect(ssh_session)
+    handle = _find_handle(session_id)
+    data = _data_ok(find_java_application(session_id, APP))
+    pid = int(data["candidates"][0]["pid"])
+    prepared = _data_ok(prepare_arthas(jvm_handle=handle))
+    assert prepared["origin"] == "started_by_proxy", prepared
+
+    store = get_job_store()
+    assert store is not None
+    job = store.create(jvm_handle=handle)
+    try:
+        assert _backdate_and_cleanup(session_id, pid, authorized=True) == []
+        still = _ss_for_pid(ssh_session, pid)
+        assert ":3658" in still or ":8563" in still, still
+    finally:
+        store.update(
+            job.job_id,
+            status=JobStatus.SUCCEEDED,
+        )

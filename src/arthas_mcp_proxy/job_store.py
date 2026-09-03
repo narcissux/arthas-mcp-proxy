@@ -331,3 +331,15 @@ class SQLiteJobStore(JobStore):
 
     def cancel(self, job_id: str) -> DiagnosticJob:
         return self.update(job_id, status=JobStatus.CANCELLED)
+
+
+_INSTALLED_STORE: JobStore | None = None
+
+
+def install_job_store(store: JobStore) -> None:
+    global _INSTALLED_STORE
+    _INSTALLED_STORE = store
+
+
+def get_job_store() -> JobStore | None:
+    return _INSTALLED_STORE

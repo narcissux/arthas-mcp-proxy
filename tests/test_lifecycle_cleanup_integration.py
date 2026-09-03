@@ -29,3 +29,40 @@ def test_authorized_cleanup_uses_client_detach_and_never_stops_unowned(monkeypat
         _LIFECYCLE_REGISTRY.get(TargetIdentity("target-a", 22, "root", 4343, "100.0")) is existing
     )
     assert _LIFECYCLE_REGISTRY.get(TargetIdentity("target-a", 22, "root", 4444, "100.0")) is unknown
+
+
+def test_authorized_cleanup_skips_when_job_running(monkeypatch):
+    from arthas_mcp_proxy.job_store import JobStore, get_job_store, install_job_store
+    from arthas_mcp_proxy.jvm_registry import get_jvm_registry
+    from arthas_mcp_proxy.target_state import target_key
+
+    previous = get_job_store()
+    store = JobStore()
+    install_job_store(store)
+    try:
+        session = MagicMock(host="target-a", port=22, username="root")
+        client = ArthasClient(session, start_time="100.0")
+        identity = TargetIdentity("target-a", 22, "root", 4242, "100.0")
+        used_at = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        owned = ArthasInstance(3658, 4242, ArthasOrigin.STARTED_BY_PROXY, used_at)
+        _LIFECYCLE_REGISTRY.register(identity, owned)
+        handle = get_jvm_registry().mint(
+            target_key=target_key("target-a", 22, "root"),
+            pid=4242,
+            start_time="100.0",
+            boot_id=None,
+            application_name="app.jar",
+        )
+        store.create(jvm_handle=handle)
+        detached: list[int] = []
+        monkeypatch.setattr(client, "detach", lambda pid: detached.append(pid) or "detached")
+        now = datetime(2026, 8, 1, 12, 5, tzinfo=timezone.utc)
+        assert client.cleanup_expired(4242, now, 60, authorized=True) == []
+        assert detached == []
+        assert _LIFECYCLE_REGISTRY.get(identity) is owned
+    finally:
+        install_job_store(previous) if previous is not None else None
+        if previous is None:
+            from arthas_mcp_proxy import job_store as js
+
+            js._INSTALLED_STORE = None
