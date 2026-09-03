@@ -175,18 +175,41 @@ class ArthasHttpStreamingClient:
             )
         return value
 
+    _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "TERMINATED", "REFUSED"}
+    _WATCH_TYPES = {"watch", "trace", "stack", "tt"}
+
     @staticmethod
     def _text(item: object) -> str | None:
         if isinstance(item, str):
             return item
         if isinstance(item, dict):
+            kind = str(item.get("type", "")).lower()
+            if kind in {"status", "notification"}:
+                return None
             for key in ("output", "result", "message", "value"):
                 if key in item and item[key] is not None:
                     value = item[key]
                     return (
                         value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
                     )
+            if kind in ArthasHttpStreamingClient._WATCH_TYPES or any(
+                key in item for key in ("params", "returnObj", "cost")
+            ):
+                return json.dumps(item, ensure_ascii=False)
         return None
+
+    @classmethod
+    def _is_terminal(cls, result: object, envelope_body: object) -> bool:
+        if isinstance(envelope_body, dict):
+            job_status = str(envelope_body.get("jobStatus", "")).upper()
+            if job_status in cls._TERMINAL_STATES:
+                return True
+        if not isinstance(result, dict):
+            return False
+        state = str(result.get("state") or result.get("jobStatus") or "").upper()
+        if state in cls._TERMINAL_STATES:
+            return True
+        return str(result.get("type", "")).lower() == "status"
 
     def execute_stream(
         self,
@@ -250,9 +273,8 @@ class ArthasHttpStreamingClient:
                     if text:
                         output.append(text)
                         emit(text)
-                    state = str(result.get("state", "")).upper() if isinstance(result, dict) else ""
+                    terminal |= self._is_terminal(result, raw)
                     status_code = result.get("statusCode") if isinstance(result, dict) else None
-                    terminal |= state in {"SUCCEEDED", "FAILED", "TERMINATED", "REFUSED"}
                     if status_code not in (None, 0, "0"):
                         raise ArthasHttpError(
                             str(result.get("message") or "Arthas command failed"),

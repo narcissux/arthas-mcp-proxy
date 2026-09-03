@@ -74,3 +74,35 @@ def test_http_long_polling_contract_uses_basic_auth_and_poll_timeout() -> None:
         client._request({"action": "pull_results"}, 300)
     assert "--user admin:test-secret" in calls[0][0]
     assert calls[0][1] == 305
+
+
+def test_http_long_polling_real_watch_status_packet() -> None:
+    """C3 live shape: type=watch hits plus type=status without state still finish."""
+
+    def execute(command: str, timeout: int = 60) -> tuple[str, str, int]:
+        payload = json.loads(command.split("-d ", 1)[1].split(" http", 1)[0].strip("'"))
+        action = payload["action"]
+        if action == "init_session":
+            return '{"state":"SUCCEEDED","sessionId":"s","consumerId":"c"}', "", 0
+        if action == "async_exec":
+            return '{"state":"SCHEDULED","body":{"jobId":3}}', "", 0
+        if action == "pull_results":
+            return (
+                '{"body":{"jobStatus":"TERMINATED","results":['
+                '{"type":"watch","jobId":3,"cost":1.2,"params":[42],'
+                '"returnObj":"[2, 3, 7]","className":"demo.MathGame",'
+                '"methodName":"primeFactors"},'
+                '{"type":"status","jobId":3,"statusCode":0}]}}',
+                "",
+                0,
+            )
+        return '{"state":"SUCCEEDED"}', "", 0
+
+    emitted: list[str] = []
+    result = ArthasHttpStreamingClient(execute, 8563).execute_stream(
+        "watch demo.MathGame primeFactors -n 1", emitted.append, threading.Event(), timeout=2
+    )
+    assert "primeFactors" in result
+    assert "demo.MathGame" in result
+    assert emitted
+    assert "statusCode" not in result

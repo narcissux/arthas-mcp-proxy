@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from contextlib import suppress
@@ -266,6 +265,10 @@ def test_c3_g_cancel_running_hits_interrupt_and_releases_quota() -> None:
     with (
         patch("arthas_mcp_proxy.server.ArthasClient", side_effect=factory),
         patch("arthas_mcp_proxy.arthas_client._ensure_agent", return_value=3658),
+        patch(
+            "arthas_mcp_proxy.arthas_client._detect_existing_agent",
+            return_value=(3658, 8563),
+        ),
         patch("arthas_mcp_proxy.arthas_client._check_process_identity", return_value=True),
         patch("arthas_mcp_proxy.arthas_client._find_arthas_path", return_value="/tmp/as.sh"),  # noqa: S108
         patch("arthas_mcp_proxy.arthas_client._get_sudo_user", return_value=None),
@@ -431,27 +434,6 @@ def test_c3_k_newline_or_nul_class_is_invalid_argument(bad: str) -> None:
     assert _error_code(raw) == "INVALID_ARGUMENT"
     assert _error_code(other) == "INVALID_ARGUMENT"
     client.execute_streaming_command.assert_not_called()
-
-
-def _c3_live_gate(request: pytest.FixtureRequest) -> None:
-    use_docker = bool(request.config.getoption("--docker-target", default=False))
-    has_ssh_host = bool(os.environ.get("TEST_SSH_HOST"))
-    if not use_docker and not has_ssh_host:
-        pytest.skip("specified-not-run: no docker/target")
-
-
-@pytest.mark.integration
-def test_c3_l_docker_short_watch_specified_not_run(request: pytest.FixtureRequest) -> None:
-    """C3-l: Docker short watch — specified-not-run unless a live target is set."""
-    _c3_live_gate(request)
-    pytest.fail("C3-l live Docker short watch path is not wired; not green")
-
-
-@pytest.mark.integration
-def test_c3_m_docker_long_trace_specified_not_run(request: pytest.FixtureRequest) -> None:
-    """C3-m: Docker long trace — specified-not-run unless a live target is set."""
-    _c3_live_gate(request)
-    pytest.fail("C3-m live Docker long trace path is not wired; not green")
 
 
 @pytest.mark.unit

@@ -1126,12 +1126,17 @@ class ArthasClient:
         self.last_identity_complete = _check_process_identity(
             self.session, pid, self.start_time, self.boot_id
         )
-        port = _ensure_agent(
-            self.session, pid, self._get_arthas_path(owner), owner, self.start_time
-        )
+        _ensure_agent(self.session, pid, self._get_arthas_path(owner), owner, self.start_time)
         state_key = _state_key(self.session, pid, self.start_time)
         with _PID_STATE_LOCK:
-            http_port = _PID_STATE.get(state_key, {}).get("http_port", port + 1)
+            http_port = _PID_STATE.get(state_key, {}).get("http_port")
+        if http_port is None:
+            detected = _detect_existing_agent(self.session, pid, owner)
+            http_port = detected[1] if detected is not None else None
+        if http_port is None:
+            raise RuntimeError(
+                f"Arthas HTTP port is unknown for PID {pid}; call prepare_arthas first"
+            )
         client = ArthasHttpStreamingClient(
             lambda command, timeout=60: _exec_ssh(
                 self.session, command, timeout=timeout, sudo_user=owner
