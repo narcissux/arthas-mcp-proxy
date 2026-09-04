@@ -129,9 +129,12 @@ def test_b4_2_a_watch_method_fourth_held_slot_is_limit_exceeded() -> None:
     policy = ObservationPolicy()
     session = _session()
     release = threading.Event()
+    # 3 workers + main: do not hit the 4th until all 3 streams have entered.
+    started = threading.Barrier(4)
     client = MagicMock()
 
     def _block(*_args: object, **_kwargs: object) -> str:
+        started.wait(timeout=2)
         assert release.wait(timeout=2)
         return "watch output"
 
@@ -148,6 +151,7 @@ def test_b4_2_a_watch_method_fourth_held_slot_is_limit_exceeded() -> None:
                     _watch_method_impl(session, PID_A, "com.Foo", "bar", times=1, await_ms=0)
                 )
             )
+        started.wait(timeout=2)
         fourth = _watch_method_impl(session, PID_A, "com.Foo", "bar", times=1, await_ms=0)
         release.set()
         for job_id in job_ids:
@@ -425,9 +429,12 @@ def test_b4_2_a_trace_method_fourth_held_slot_is_limit_exceeded() -> None:
     policy = ObservationPolicy()
     session = _session()
     release = threading.Event()
+    # 3 workers + main: do not hit the 4th until all 3 streams have entered.
+    started = threading.Barrier(4)
     client = MagicMock()
 
     def _block(*_args: object, **_kwargs: object) -> str:
+        started.wait(timeout=2)
         assert release.wait(timeout=2)
         return "trace output"
 
@@ -444,6 +451,7 @@ def test_b4_2_a_trace_method_fourth_held_slot_is_limit_exceeded() -> None:
                     _trace_impl(session, PID_A, "com.Foo", "bar", times=1, ttl=60, await_ms=0)
                 )
             )
+        started.wait(timeout=2)
         fourth = _trace_impl(session, PID_A, "com.Foo", "bar", times=1, ttl=60, await_ms=0)
         release.set()
         for job_id in job_ids:
