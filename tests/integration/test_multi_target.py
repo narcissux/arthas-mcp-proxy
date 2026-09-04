@@ -6,6 +6,7 @@ import pytest
 
 from arthas_mcp_proxy.arthas_client import ArthasClient
 from arthas_mcp_proxy.ssh_pool import SSHConnectionPool
+from tests.integration.test_pid_replacement import _ensure_single_math_game
 
 pytestmark = [pytest.mark.integration, pytest.mark.real_jvm]
 
@@ -34,6 +35,9 @@ def test_discovery_and_diagnostic_are_target_scoped(
 
         assert len(sessions) == 2
         for _session_id, session in sessions:
+            # Session-scoped docker_test_targets is shared with B6-c, which
+            # kills math-game on target-a; re-seed before discovery.
+            _ensure_single_math_game(session)
             client = ArthasClient(session)
             processes = client.list_java_processes()
             assert "PID" in processes, processes
