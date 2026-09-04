@@ -506,18 +506,25 @@ def _ensure_agent(
                     _LIFECYCLE_REGISTRY.touch(identity, datetime.now(timezone.utc))
             return cached_port
 
-    # Level 2: Detect existing agent (cross-session reuse)
-    existing_port = _detect_arthas_port(session, pid, owner)
-    if existing_port is not None:
-        logger.info("[ENSURE] Reused existing agent PID %d -> port %d", pid, existing_port)
+    # Level 2: Detect existing agent (cross-session reuse).
+    # Never invent http_port as telnet+1 — classify real listen ports.
+    existing = _detect_existing_agent(session, pid, owner)
+    if existing is not None:
+        telnet_port, http_port = existing
+        logger.info(
+            "[ENSURE] Reused existing agent PID %d -> telnet=%d http=%s",
+            pid,
+            telnet_port,
+            http_port,
+        )
         with _PID_STATE_LOCK:
             _PID_STATE[state_key] = {
-                "port": existing_port,
-                "http_port": existing_port + 1,
+                "port": telnet_port,
+                "http_port": http_port,
                 "owner": owner,
             }
-        register_instance(existing_port, ArthasOrigin.EXISTING)
-        return existing_port
+        register_instance(telnet_port, ArthasOrigin.EXISTING)
+        return telnet_port
 
     # Level 3: Full attach (serialized per PID)
     logger.info("[ENSURE] Need attach for PID %d, acquiring lock...", pid)
@@ -540,17 +547,23 @@ def _ensure_agent(
                         _LIFECYCLE_REGISTRY.touch(identity, datetime.now(timezone.utc))
                 return port
 
-        existing_port = _detect_arthas_port(session, pid, owner)
-        if existing_port is not None:
-            logger.info("[ENSURE] Agent appeared after lock PID %d -> port %d", pid, existing_port)
+        existing = _detect_existing_agent(session, pid, owner)
+        if existing is not None:
+            telnet_port, http_port = existing
+            logger.info(
+                "[ENSURE] Agent appeared after lock PID %d -> telnet=%d http=%s",
+                pid,
+                telnet_port,
+                http_port,
+            )
             with _PID_STATE_LOCK:
                 _PID_STATE[state_key] = {
-                    "port": existing_port,
-                    "http_port": existing_port + 1,
+                    "port": telnet_port,
+                    "http_port": http_port,
                     "owner": owner,
                 }
-            register_instance(existing_port, ArthasOrigin.EXISTING)
-            return existing_port
+            register_instance(telnet_port, ArthasOrigin.EXISTING)
+            return telnet_port
 
         logger.info("[ENSURE] Attaching new agent for PID %d...", pid)
         port = _attach_agent(session, pid, arthas_path, owner, start_time)

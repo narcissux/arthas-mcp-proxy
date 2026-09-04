@@ -329,14 +329,16 @@ class TestErrorHandling:
             arthas_client.exec_command(pid=999999, command="thread -n 1")
 
     def test_invalid_command(self, arthas_client: "ArthasClient", target_pid: int) -> None:
-        result = arthas_client.exec_command(pid=target_pid, command="not_a_real_command_xyz")
-        logger.info("Invalid command result: %s", result)
-        assert (
-            "error" in result.lower()
-            or "unknown" in result.lower()
-            or "not found" in result.lower()
-            or len(result) > 0
-        )
+        # HTTP path (C2): unknown verbs raise DomainError(ARTHAS_COMMAND_FAILED),
+        # not a soft CLI string and not CLI fallback.
+        from arthas_mcp_proxy.errors import DomainError
+        from arthas_mcp_proxy.models import ErrorCode
+
+        with pytest.raises(DomainError) as exc_info:
+            arthas_client.exec_command(pid=target_pid, command="not_a_real_command_xyz")
+        assert exc_info.value.code is ErrorCode.ARTHAS_COMMAND_FAILED
+        msg = str(exc_info.value).lower()
+        assert "not found" in msg or "not_a_real_command" in msg
 
 
 class TestEndToEnd:

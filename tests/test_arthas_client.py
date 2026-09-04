@@ -119,7 +119,7 @@ class TestConcurrencyLocks:
 
         with (
             patch("arthas_mcp_proxy.arthas_client._attach_agent", side_effect=fake_attach),
-            patch("arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=None),
+            patch("arthas_mcp_proxy.arthas_client._detect_existing_agent", return_value=None),
         ):
             # Pre-populate cache
             with _PID_STATE_LOCK:
@@ -131,11 +131,30 @@ class TestConcurrencyLocks:
 
     def test_cross_session_reuse(self, mock_ssh_session):
         """Level 2: existing agent detected via ss => reuse without attach."""
-        with patch("arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=3661):
+        with patch(
+            "arthas_mcp_proxy.arthas_client._detect_existing_agent",
+            return_value=(3661, 8563),
+        ):
             port = _ensure_agent(mock_ssh_session, 5678, "/tmp/as.sh")  # noqa: S108
             assert port == 3661
             with _PID_STATE_LOCK:
-                assert _PID_STATE[_state_key(mock_ssh_session, 5678)]["port"] == 3661
+                cached = _PID_STATE[_state_key(mock_ssh_session, 5678)]
+                assert cached["port"] == 3661
+                assert cached["http_port"] == 8563
+                assert cached["http_port"] != 3661 + 1
+
+    def test_ensure_reuse_does_not_guess_telnet_plus_one(self, mock_ssh_session):
+        """Reuse path stores classified http_port, never invents telnet+1=3659."""
+        with patch(
+            "arthas_mcp_proxy.arthas_client._detect_existing_agent",
+            return_value=(3658, 4012),
+        ):
+            port = _ensure_agent(mock_ssh_session, 4242, "/tmp/as.sh")  # noqa: S108
+            assert port == 3658
+            with _PID_STATE_LOCK:
+                cached = _PID_STATE[_state_key(mock_ssh_session, 4242)]
+                assert cached["http_port"] == 4012
+                assert cached["http_port"] != 3659
 
 
 class TestArthasClient:
