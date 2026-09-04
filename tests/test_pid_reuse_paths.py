@@ -73,6 +73,10 @@ def test_execute_streaming_command_inherits_session_identity(session: MagicMock)
             "arthas_mcp_proxy.arthas_client._check_process_identity", return_value=True
         ) as check_id,
         patch("arthas_mcp_proxy.arthas_client._ensure_agent", return_value=3658),
+        patch(
+            "arthas_mcp_proxy.arthas_client._detect_existing_agent",
+            return_value=(3658, 8563),
+        ),
         patch("arthas_mcp_proxy.arthas_client.ArthasHttpStreamingClient") as stream_cls,
     ):
         stream_cls.return_value.execute_stream.return_value = "ok"

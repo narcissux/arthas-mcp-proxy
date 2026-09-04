@@ -339,6 +339,7 @@ def _classify_arthas_ports(ports: list[int]) -> tuple[int, int | None] | None:
         if telnet_range
         else next((port for port in unique if port < 8000), unique[0])
     )
+    http_port: int | None
     if http_range and http_range[0] != telnet:
         http_port = http_range[0]
     else:
