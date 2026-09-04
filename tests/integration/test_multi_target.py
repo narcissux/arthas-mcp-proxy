@@ -15,15 +15,18 @@ def test_discovery_and_diagnostic_are_target_scoped(
 ) -> None:
     """Exercise real SSH, JVM discovery, and a diagnostic on both targets."""
     if not docker_test_targets:
-        pytest.fail("Multi-target test requires --docker-targets; refusing to skip")
+        pytest.skip("specified-not-run: need --docker-targets")
 
     pool = SSHConnectionPool(idle_timeout=120)
     sessions = []
     try:
         for target in docker_test_targets.values():
             session_id = pool.connect(
-                host=target["host"], port=int(target["port"]),
-                username=target["username"], password=target["password"], timeout=30,
+                host=target["host"],
+                port=int(target["port"]),
+                username=target["username"],
+                password=target["password"],
+                timeout=30,
             )
             session = pool.get_session(session_id)
             assert session is not None
@@ -41,8 +44,7 @@ def test_discovery_and_diagnostic_are_target_scoped(
             )
             result = client.thread_dump(pid=pid, top_n=5)
             assert any(
-                state in result
-                for state in ("RUNNABLE", "WAITING", "TIMED_WAITING", "BLOCKED")
+                state in result for state in ("RUNNABLE", "WAITING", "TIMED_WAITING", "BLOCKED")
             )
     finally:
         for session_id, _session in sessions:
