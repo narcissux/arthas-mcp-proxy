@@ -230,7 +230,9 @@ def test_b6_d_docker_ambiguous_same_name_does_not_mint(
     session_id = session_line.rsplit("Session ID:", 1)[1].strip()
     assert get_connection_pool().get_session(session_id) is not None
 
-    _ensure_single_math_game(ssh_session)
+    # Fresh JVM: prior B5/B6 cells may leave Agent on :3658/:8563 of a kept
+    # math-game process; ambiguous must not inherit that leftover listen state.
+    _restart_math_game(ssh_session)
     _start_extra_math_game(ssh_session)
     pids = _math_game_pids(_math_game_listing(ssh_session))
     assert len(pids) >= 2, pids
