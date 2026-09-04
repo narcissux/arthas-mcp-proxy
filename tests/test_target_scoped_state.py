@@ -95,7 +95,10 @@ def test_pid_state_cache_is_target_scoped() -> None:
     client_a = ArthasClient(_fake_session("host-a", 22, "root"))
     client_b = ArthasClient(_fake_session("host-b", 22, "root"))
 
-    with patch("arthas_mcp_proxy.arthas_client._detect_arthas_port", return_value=3661):
+    with patch(
+        "arthas_mcp_proxy.arthas_client._detect_existing_agent",
+        return_value=(3661, 8563),
+    ):
         port_a = _ensure_agent(client_a.session, 1234, "/tmp/as.sh")  # noqa: S108
         port_b = _ensure_agent(client_b.session, 1234, "/tmp/as.sh")  # noqa: S108
 
