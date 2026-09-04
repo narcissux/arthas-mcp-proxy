@@ -74,7 +74,7 @@ Fixture / 集成证据（RED→GREEN，**不是**完整产品能力声明）：
 | Docker `real_jvm` | `21 passed` | 真 SSH/JVM/Arthas，含 lifecycle cleanup |
 | Docker multi-target | `1 passed` | 两个真实 target 发现/诊断隔离 |
 | PID replacement | `1 passed` | 同 PID、新进程身份拒绝 |
-| HTTP long-polling / interrupt | unit/contract coverage; leftover live docker | 流式输出、取消 interrupt、session 清理 |
+| HTTP long-polling / interrupt | unit/contract + live Docker（C2-i / C3-l/m） | 流式输出、取消 interrupt、session 清理 |
 | MCP job `server→manager` | contract covered | start/get/cancel 走 manager-backed job |
 | stdio / SSE / Streamable HTTP | protocol E2E | list/call 生命周期 |
 
@@ -84,7 +84,7 @@ Fixture / 集成证据（RED→GREEN，**不是**完整产品能力声明）：
 
 ### 进度如何
 
-**当前事实（以 `tools/list` 与 leftover live Docker 为准，不是 GitHub shipped）：** MCP 已注册工具见 Available Tools；本地 unit/contract 覆盖 find+handle、`prepare_arthas`、`await_ms`、job 绑 JVM。仍 leftover、未标 shipped 的 live Docker：C2-i 真 HTTP `/api`、C3-l/m Docker watch/trace、B6 e2e 杀进程同 pid 重启。不要把 B/C 写成已完成产品事实。设计文档是契约/回归记录。真实 MCP job 集成已接入 `server→manager`。官方 Arthas 没有 WebSocket 命令协议；HTTP long-polling 不是待完成的 WebSocket backend。
+**当前事实（基线 `origin/dev/ai-diagnostics @ 92b14cd`，产品接受 / C4/D shipped）：** MCP 已注册工具见 Available Tools。主路 live Docker 已验收：find+opaque handle、`prepare_arthas`、HTTP `/api`、watch/trace（`await_ms`）、B6 a–d（含跨靶与 ambiguous）、job 绑 JVM。全量回归+主路 perf 已在 tip `92b14cd` 记录（unit/contract 443；live 路径无产品红）。**C4/D 产品接受 / shipped** 指本窄产品（AI 远程看一台 JVM 的 MCP proxy）验收关闭，**不是**完整可观测平台、完整 Arthas 套件或生产级 durable job/RBAC。设计文档仍是契约/回归记录。官方 Arthas 没有 WebSocket 命令协议；HTTP long-polling 不是待完成的 WebSocket backend。真实 MCP job 集成已接入 `server→manager`。
 
 默认 job 与输出是 process-local in-memory state，not durable storage or a durable API。SQLite 仅在显式环境变量下作为单实例 MVP。
 

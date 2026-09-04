@@ -2,7 +2,7 @@
 
 > **文档状态：已完成的实现计划/设计记录。** 下文保留 TDD 过程约束与契约，供维护和回归使用；不再是“待执行”清单。
 
-**状态：** 计划内路径有 unit/contract 覆盖与 leftover live docker，未标 shipped；产品边界仍受下方明确限制，不能据此宣称完整产品能力  
+**状态：** 计划内路径已有 unit/contract 与 live Docker 验收；产品章节 C4/D 在 `dev/ai-diagnostics@92b14cd` **产品接受 / shipped**（窄 MCP proxy，非完整可观测平台）；边界限制仍适用  
 **日期：** 2026-08-01  
 **仓库：** `/home/ubuntu/arthas-mcp-proxy`  
 **基线：** `main@9191aa8`  
@@ -10,9 +10,9 @@
 
 ### 当前实现状态（2026-08-02）
 
-当前仓库已实现并有测试覆盖：catalog-backed typed tools、结构化结果/错误的主要路径、基础 async job 创建/查询/取消、有限输出与签名 job-bound opaque cursor 分页、cookbook prompts、healthz，以及 stdio/SSE/Streamable HTTP 的协议级 transport E2E。真实 MCP job 集成已接入 `server→manager`：MCP start/get/cancel 调用创建并控制 manager-backed job，并由 server→manager contract tests 覆盖。当前 fixture 的 RED→GREEN 证据为：no-network Java `1 passed`、Docker `real_jvm` 已验证 `21 passed`、Docker multi-target `1 passed`、PID replacement `1 passed`；HTTP long-polling/interrupt 有 unit/contract coverage，leftover live docker 未标 shipped。
+当前仓库已实现并有测试覆盖：catalog-backed typed tools、结构化结果/错误的主要路径、基础 async job 创建/查询/取消、有限输出与签名 job-bound opaque cursor 分页、cookbook prompts、healthz，以及 stdio/SSE/Streamable HTTP 的协议级 transport E2E。真实 MCP job 集成已接入 `server→manager`：MCP start/get/cancel 调用创建并控制 manager-backed job，并由 server→manager contract tests 覆盖。当前 fixture 与回归证据以 tip `92b14cd` 为准（回归记录于 tip `92b14cd`）：unit/contract 443；Docker `real_jvm` / multi-target / B6 / C2-i / C3-l/m live 已绿；HTTP long-polling/interrupt 有 unit/contract 与 live 覆盖。C4/D **产品接受 / shipped**（窄产品），不得据此宣称完整可观测平台。
 
-本计划内的 HTTP/CLI fallback、Arthas 长命令、interrupt/取消传播、PID replacement 与 authorized lifecycle cleanup 有 unit/contract 覆盖，C2-i leftover live docker 未标 shipped。官方 Arthas 没有 WebSocket 命令协议，因此长命令采用 HTTP long-polling（`init_session`/`async_exec`/`pull_results`），不是待完成的 WebSocket backend；通用 job-manager WebSocket contract 也不宣称是 Arthas WebSocket 集成。HTTP 在提交前连接失败时才可能降级 CLI（C2-i leftover），取消会发送 `interrupt_job` 并关闭 session；PID identity 包含 start time；cleanup 仅对 proxy-owned 实例且需要显式授权。
+本计划内的 HTTP/CLI fallback、Arthas 长命令、interrupt/取消传播、PID replacement 与 authorized lifecycle cleanup 有 unit/contract 覆盖，并已 live 验证（含 C2-i HTTP `/api`）。官方 Arthas 没有 WebSocket 命令协议，因此长命令采用 HTTP long-polling（`init_session`/`async_exec`/`pull_results`），不是待完成的 WebSocket backend；通用 job-manager WebSocket contract 也不宣称是 Arthas WebSocket 集成。HTTP 在提交前连接失败时才可能降级 CLI（C2-i live 已验），取消会发送 `interrupt_job` 并关闭 session；PID identity 包含 start time；cleanup 仅对 proxy-owned 实例且需要显式授权。
 
 剩余边界明确不属于本计划交付：完整 RBAC、多租户隔离/身份管理、完整 Arthas command suite，以及生产级 durable job storage/observability。现有 loopback、DNS rebinding、allowlist、白名单和脱敏是安全默认值，不应描述为完整认证/RBAC。无网络 Java fixture 保持绝不联网，测试在 java/javac 缺失时明确失败而非静默 skip；远程 SSH 仍依赖环境配置。
 
@@ -225,12 +225,14 @@ class ResultMeta(BaseModel):
     returned_chars: int | None = None
     next_cursor: str | None = None
 
+
 class ErrorDetail(BaseModel):
     code: ErrorCode
     message: str
     phase: str | None = None
     retryable: bool = False
     suggestion: str | None = None
+
 
 class ToolResult(BaseModel):
     status: Literal["success", "running", "error"]
@@ -335,9 +337,11 @@ class RiskLevel(StrEnum):
     HIGH_IMPACT = "high_impact"
     ARBITRARY = "arbitrary"
 
+
 class ExecutionMode(StrEnum):
     SHORT = "short"
     STREAMING = "streaming"
+
 
 class CommandSpec(BaseModel):
     name: str
@@ -494,13 +498,14 @@ SDK 2.x/协议 2026-07-28 的适配必须另建兼容分支或后续阶段；先
 
 ```python
 class JVMIdentity(BaseModel):
-    target_key: str          # username@host:port 的不可逆/内部稳定标识
+    target_key: str  # username@host:port 的不可逆/内部稳定标识
     pid: int
-    start_time_ticks: int    # /proc/<pid>/stat field 22
-    boot_id: str | None      # /proc/sys/kernel/random/boot_id
+    start_time_ticks: int  # /proc/<pid>/stat field 22
+    boot_id: str | None  # /proc/sys/kernel/random/boot_id
+
 
 class JVMHandleRecord(BaseModel):
-    handle: str              # jvm_<random>
+    handle: str  # jvm_<random>
     identity: JVMIdentity
     application_name: str
     owner: str
@@ -525,6 +530,7 @@ class ArthasOrigin(StrEnum):
     EXISTING = "existing"
     STARTED_BY_PROXY = "started_by_proxy"
     UNKNOWN = "unknown"
+
 
 class ArthasRuntime(BaseModel):
     jvm_identity: JVMIdentity
