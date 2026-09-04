@@ -10,7 +10,7 @@
 
 ### 当前实现状态（2026-08-02）
 
-当前仓库已实现并有测试覆盖：catalog-backed typed tools、结构化结果/错误的主要路径、基础 async job 创建/查询/取消、有限输出与签名 job-bound opaque cursor 分页、cookbook prompts、healthz，以及 stdio/SSE/Streamable HTTP 的协议级 transport E2E。真实 MCP job 集成已接入 `server→manager`：MCP start/get/cancel 调用创建并控制 manager-backed job，并由 server→manager contract tests 覆盖。当前 fixture 与回归证据以 tip `92b14cd` 为准（回归记录于 tip `92b14cd`）：unit/contract 443；Docker `real_jvm` / multi-target / B6 / C2-i / C3-l/m live 已绿；HTTP long-polling/interrupt 有 unit/contract 与 live 覆盖。C4/D **产品接受 / shipped**（窄产品），不得据此宣称完整可观测平台。
+当前仓库已实现并有测试覆盖：catalog-backed typed tools、结构化结果/错误的主要路径、基础 async job 创建/查询/取消、有限输出与签名 job-bound opaque cursor 分页、cookbook prompts、healthz，以及 stdio/SSE/Streamable HTTP 的协议级 transport E2E。真实 MCP job 集成已接入 `server→manager`：MCP start/get/cancel 调用创建并控制 manager-backed job，并由 server→manager contract tests 覆盖。当前 fixture 的 RED→GREEN 证据为：no-network Java `1 passed`、Docker `real_jvm` 已验证 `21 passed`、Docker multi-target `1 passed`、PID replacement `1 passed`；tip `92b14cd` 全量回归 unit/contract 443，Docker `real_jvm` / multi-target / B6 / C2-i / C3-l/m live 已绿；HTTP long-polling/interrupt 有 unit/contract 与 live 覆盖。C4/D **产品接受 / shipped**（窄产品），不得据此宣称完整可观测平台。
 
 本计划内的 HTTP/CLI fallback、Arthas 长命令、interrupt/取消传播、PID replacement 与 authorized lifecycle cleanup 有 unit/contract 覆盖，并已 live 验证（含 C2-i HTTP `/api`）。官方 Arthas 没有 WebSocket 命令协议，因此长命令采用 HTTP long-polling（`init_session`/`async_exec`/`pull_results`），不是待完成的 WebSocket backend；通用 job-manager WebSocket contract 也不宣称是 Arthas WebSocket 集成。HTTP 在提交前连接失败时才可能降级 CLI（C2-i live 已验），取消会发送 `interrupt_job` 并关闭 session；PID identity 包含 start time；cleanup 仅对 proxy-owned 实例且需要显式授权。
 

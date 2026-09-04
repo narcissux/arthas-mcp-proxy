@@ -84,7 +84,7 @@ Fixture / 集成证据（RED→GREEN，**不是**完整产品能力声明）：
 
 ### 进度如何
 
-**当前事实（基线 `origin/dev/ai-diagnostics @ 92b14cd`，产品接受 / C4/D shipped）：** MCP 已注册工具见 Available Tools。主路 live Docker 已验收：find+opaque handle、`prepare_arthas`、HTTP `/api`、watch/trace（`await_ms`）、B6 a–d（含跨靶与 ambiguous）、job 绑 JVM。全量回归+主路 perf 已在 tip `92b14cd` 记录（unit/contract 443；live 路径无产品红）。**C4/D 产品接受 / shipped** 指本窄产品（AI 远程看一台 JVM 的 MCP proxy）验收关闭，**不是**完整可观测平台、完整 Arthas 套件或生产级 durable job/RBAC。设计文档仍是契约/回归记录。官方 Arthas 没有 WebSocket 命令协议；HTTP long-polling 不是待完成的 WebSocket backend。真实 MCP job 集成已接入 `server→manager`。
+**当前事实（基线 `origin/dev/ai-diagnostics @ 92b14cd`，产品接受 / C4/D shipped）：** MCP 已注册工具见 Available Tools（以 `tools/list` 为准）。主路 live Docker 已验收：find+opaque handle、`prepare_arthas`、HTTP `/api`、watch/trace（`await_ms`）、B6 a–d（含跨靶与 ambiguous）、job 绑 JVM。全量回归+主路 perf 已在 tip `92b14cd` 记录（unit/contract 443；live 路径无产品红）。**C4/D 产品接受 / shipped** 指本窄产品（AI 远程看一台 JVM 的 MCP proxy）验收关闭，**不是**完整可观测平台、完整 Arthas 套件或生产级 durable job/RBAC。设计文档仍是契约/回归记录。官方 Arthas 没有 WebSocket 命令协议；HTTP long-polling 不是待完成的 WebSocket backend。真实 MCP job 集成已接入 `server→manager`。
 
 默认 job 与输出是 process-local in-memory state，not durable storage or a durable API。SQLite 仅在显式环境变量下作为单实例 MVP。
 
