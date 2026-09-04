@@ -4,7 +4,7 @@
 
 **状态：** 计划内路径已有 unit/contract 与 live Docker 验收；产品章节 C4/D 在 `dev/ai-diagnostics@92b14cd` **产品接受 / shipped**（窄 MCP proxy，非完整可观测平台）；边界限制仍适用  
 **日期：** 2026-08-01  
-**仓库：** `/home/ubuntu/arthas-mcp-proxy`  
+**仓库：** `narcissux/arthas-mcp-proxy`（clone root）  
 **基线：** `main@9191aa8`  
 **产品目标：** 用户只提供 SSH 服务器和 Java 应用名，MCP 负责定位 JVM、按需准备 Arthas，并向 AI 提供稳定、兼容、低侵入、可控制的在线诊断能力。
 
@@ -37,7 +37,7 @@
 ### 0.2 开工前基线检查
 
 ```bash
-cd /home/ubuntu/arthas-mcp-proxy
+cd <clone-root>
 git status --short --branch
 git rev-parse HEAD
 python3 -m pytest tests --ignore=tests/integration -q
